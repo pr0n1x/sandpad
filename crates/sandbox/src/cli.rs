@@ -104,7 +104,7 @@ options:
                         usb      USB and HID devices: the whole host /dev,
                                  live, and udev hot-plug events relayed in
                         x11      same as -x
-                        root     sudo and pkexec inside ask you, on the host,
+                        root     sudo, pkexec and su inside ask you, on the host,
                                  whether the command may run as root in the
                                  sandbox (a dialog per request); root means
                                  the box's own system layer, never the host

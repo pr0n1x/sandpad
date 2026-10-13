@@ -1,5 +1,5 @@
-//! The shim: what runs as `/usr/bin/sudo` and `/usr/bin/pkexec` inside a
-//! `sandbox -p root` sandbox. Parses the command line as the program it
+//! The shim: what runs as `/usr/bin/sudo`, `/usr/bin/pkexec` and
+//! `/usr/bin/su` inside a `sandbox -p root` sandbox. Parses the command line as the program it
 //! stands in for would, sends the request to the host over the socket in
 //! `$XDG_RUNTIME_DIR`, and exits with the command's status — or fails the
 //! way sudo does without a password.
@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
-use sandbox_askroot::{parse_pkexec, parse_sudo, request, Reply, Request, SOCKET_NAME};
+use sandbox_askroot::{parse_pkexec, parse_su, parse_sudo, request, Reply, Request, SOCKET_NAME};
 
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
@@ -17,6 +17,7 @@ fn main() {
         .unwrap_or_default();
     let (name, parsed) = match name.as_str() {
         "pkexec" => ("pkexec", parse_pkexec(&argv[1..])),
+        "su" => ("su", parse_su(&argv[1..])),
         _ => ("sudo", parse_sudo(&argv[1..])),
     };
     let inv = parsed.unwrap_or_else(|e| {
@@ -37,11 +38,24 @@ fn main() {
         eprintln!("{name}: XDG_RUNTIME_DIR is not set");
         exit(1)
     });
+    // a login shell starts in root's home, as su -l would have it; the
+    // sandbox may not have one, then / like a shell with no home
+    let login = name == "su" && inv.argv.get(1).map(String::as_str) == Some("-l");
+    let cwd = if login {
+        if Path::new("/root").is_dir() {
+            "/root"
+        } else {
+            "/"
+        }
+        .to_string()
+    } else {
+        std::env::current_dir()
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "/".into())
+    };
     let req = Request {
         argv: inv.argv,
-        cwd: std::env::current_dir()
-            .map(|d| d.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "/".into()),
+        cwd,
         env: std::env::vars().collect(),
         preserve_env: inv.preserve_env,
     };

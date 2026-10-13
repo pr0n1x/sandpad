@@ -54,10 +54,11 @@ pub fn socket_path(runtime: &Path) -> PathBuf {
 }
 
 /// The bwrap arguments: the socket bound (writable: connecting needs that)
-/// at its name under the sandbox's runtime dir, and the shim over sudo and
-/// pkexec — where each name resolves on the host, since /usr/bin/sudo may
-/// be an alternatives symlink and bwrap can't mount over a symlink; the
-/// chain inside then ends at the shim, and argv[0] still names it sudo.
+/// at its name under the sandbox's runtime dir, and the shim over sudo,
+/// pkexec and su — where each name resolves on the host, since
+/// /usr/bin/sudo may be an alternatives symlink and bwrap can't mount over
+/// a symlink; the chain inside then ends at the shim, and argv[0] still
+/// names it sudo. /bin is usr/bin inside, so /bin/su is covered too.
 pub fn bwrap_args(socket: &Path, runtime_inside: &Path) -> Vec<OsString> {
     let shim = sibling_binary(SHIM);
     if !shim.is_file() {
@@ -71,7 +72,7 @@ pub fn bwrap_args(socket: &Path, runtime_inside: &Path) -> Vec<OsString> {
         socket.into(),
         runtime_inside.join(SOCKET_NAME).into(),
     ];
-    for name in ["/usr/bin/sudo", "/usr/bin/pkexec"] {
+    for name in ["/usr/bin/sudo", "/usr/bin/pkexec", "/usr/bin/su"] {
         let dest = crate::util::realpath_e(Path::new(name)).unwrap_or_else(|_| PathBuf::from(name));
         args.extend([
             "--ro-bind".into(),

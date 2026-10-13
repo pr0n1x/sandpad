@@ -848,7 +848,9 @@ fn root_permission_asks_the_host_and_runs_the_command_as_root() {
             "-c",
             "id -u; sudo id -u; sudo sh -c 'echo hi > /usr/local/ok; echo $SUDO_USER'; \
              cat /usr/local/ok; pkexec --user root sh -c 'echo $$ > /dev/null && echo in'; \
-             echo x | sudo cat; sudo -v && echo validated; sudo false; echo $?",
+             echo x | sudo cat; sudo -v && echo validated; sudo false; echo $?; \
+             su -c 'id -u'; echo 'id -u; case $PWD in /|/root) echo home;; esac' | su -l root; \
+             su bob -c id; echo $?",
         ])
         .output()
         .unwrap();
@@ -862,11 +864,15 @@ fn root_permission_asks_the_host_and_runs_the_command_as_root() {
             "in".into(),
             "x".into(),
             "validated".into(),
+            "1".into(),
+            "0".into(),
+            "0".into(),
+            "home".into(),
             "1".into()
         ]
     );
     let prompt = fs::read_to_string(s.path("prompt")).unwrap();
-    assert!(prompt.contains("command: false\n"), "{prompt}");
+    assert!(prompt.contains("command: /bin/sh -l\n"), "{prompt}");
     assert!(
         prompt.contains("app: /bin/sh\n") || prompt.contains("app: /usr/bin/sh\n"),
         "{prompt}"

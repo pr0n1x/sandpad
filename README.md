@@ -183,16 +183,17 @@ sandbox [-b NAME|DIR] --reset-system
       and re-sends each event inside. libudev accepts them because the
       sender's uid is the app's own.
   - `x11` — same as `-x`.
-  - `root` — `sudo` and `pkexec` inside the sandbox ask *you*, on the
-    host, whether the command may run as root in the sandbox. Vendor
-    tools do their privileged part through `sudo -A ...` or `pkexec ...`
-    (Kontur's Diag.Plugin, installers), and both are dead ends in a
-    sandbox: sudo's setuid bit means nothing under `no_new_privs` in a
-    user namespace, and pkexec needs polkit on a system bus the sandbox
-    doesn't have. With this permission `sandbox-askroot-shim` is bound
-    over `/usr/bin/sudo` and `/usr/bin/pkexec` (at the path each name
-    resolves to on the host: `/usr/bin/sudo` may be an alternatives
-    symlink). The shim parses the command line as sudo or pkexec would
+  - `root` — `sudo`, `pkexec` and `su` inside the sandbox ask *you*, on
+    the host, whether the command may run as root in the sandbox. Vendor
+    tools do their privileged part through `sudo -A ...`, `pkexec ...` or
+    `su -l root` (Kontur's Diag.Plugin has all three, installers the
+    first), and all are dead ends in a sandbox: a setuid bit means
+    nothing under `no_new_privs` in a user namespace, and pkexec needs
+    polkit on a system bus the sandbox doesn't have. With this permission
+    `sandbox-askroot-shim` is bound over `/usr/bin/sudo`,
+    `/usr/bin/pkexec` and `/usr/bin/su` (at the path each name resolves
+    to on the host: `/usr/bin/sudo` may be an alternatives symlink). The
+    shim parses the command line as the program it stands in for would
     and sends the command, its working directory, its environment and its
     own stdin/stdout/stderr over a unix socket the `sandbox` process
     bind-mounted into the sandbox's `$XDG_RUNTIME_DIR`. For each request
@@ -207,7 +208,10 @@ sandbox [-b NAME|DIR] --reset-system
     `--root` runs have it; the shim exits with the command's status. A
     denial fails like sudo does without a password. `sudo -v` and
     `sudo -l` ask and run nothing; `-A`/`SUDO_ASKPASS`, `-n`, `-S`,
-    `-u root` are accepted, any other user refused.
+    `-u root` are accepted, any other user refused. For `su` the command
+    is the shell (`/bin/sh`, or `-s`): with `-c` running the command,
+    without it reading stdin — which is what `su -l root <<EOF` feeds it;
+    no password is read, since su takes it from the terminal, not stdin.
     "Root" is the box's own system layer, never the host. Like `-n`, the
     permission maps your uid to root in the sandbox's user namespace and
     un-roots the app in a nested one, so the app runs as you and the

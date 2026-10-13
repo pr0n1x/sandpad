@@ -2,8 +2,8 @@
 //! the user is asked on the host, and the command runs as root inside the
 //! sandbox if they approve. Three parts:
 //!
-//! - the *shim* (`sandbox-askroot-shim`), bound over `/usr/bin/sudo` and
-//!   `/usr/bin/pkexec` in the sandbox: it parses the command line it was
+//! - the *shim* (`sandbox-askroot-shim`), bound over `/usr/bin/sudo`,
+//!   `/usr/bin/pkexec` and `/usr/bin/su` in the sandbox: it parses the command line it was
 //!   called with and sends a [`Request`] — the command, the working
 //!   directory, the environment — together with its own stdin, stdout and
 //!   stderr (SCM_RIGHTS) over a unix socket the host bind-mounted into the
@@ -154,6 +154,106 @@ pub fn parse_pkexec(args: &[String]) -> Result<Invocation, String> {
         }
     }
     inv.argv = args[i..].to_vec();
+    Ok(inv)
+}
+
+/// su's: `su [options] [-] [user [shell args...]]`. The command is the
+/// shell, `-c COMMAND` or the arguments after the user handed to it, or
+/// nothing: the shell reads stdin, as it does when su is fed a heredoc.
+/// The password is not an argument: su reads it from the terminal, not
+/// stdin, so stdin is left to the shell. `-l`/`-` sets a login shell,
+/// `-m`/`-p` keeps the environment, `-s SHELL` the shell; the user is
+/// root unless named.
+pub fn parse_su(args: &[String]) -> Result<Invocation, String> {
+    let mut inv = Invocation::default();
+    let mut command: Option<String> = None;
+    let mut shell = "/bin/sh".to_string();
+    let mut login = false;
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        i += 1;
+        if a == "-" {
+            login = true;
+            break;
+        }
+        if a == "--" {
+            break;
+        }
+        if let Some(long) = a.strip_prefix("--") {
+            let (name, value) = match long.split_once('=') {
+                Some((n, v)) => (n, Some(v.to_string())),
+                None => (long, None),
+            };
+            let mut take = || {
+                value.clone().or_else(|| {
+                    i += 1;
+                    args.get(i - 1).cloned()
+                })
+            };
+            match name {
+                "login" => login = true,
+                "preserve-environment" => inv.preserve_env = true,
+                "command" | "session-command" => command = take(),
+                "shell" => shell = take().unwrap_or(shell),
+                "group" | "supp-group" | "whitelist-environment" => {
+                    take();
+                }
+                "fast" | "pty" | "no-pty" => {}
+                "help" | "version" => {
+                    return Err(format!("su: --{name} is not supported in the sandbox"))
+                }
+                _ => return Err(format!("su: unknown option --{name}")),
+            }
+            continue;
+        }
+        if let Some(shorts) = a.strip_prefix('-').filter(|s| !s.is_empty()) {
+            let chars: Vec<char> = shorts.chars().collect();
+            let mut j = 0;
+            while j < chars.len() {
+                let c = chars[j];
+                j += 1;
+                match c {
+                    'l' => login = true,
+                    'm' | 'p' => inv.preserve_env = true,
+                    'c' | 's' | 'g' | 'G' | 'w' => {
+                        let rest: String = chars[j..].iter().collect();
+                        let value = if rest.is_empty() {
+                            i += 1;
+                            args.get(i - 1).cloned()
+                        } else {
+                            Some(rest)
+                        };
+                        match c {
+                            'c' => command = value,
+                            's' => shell = value.unwrap_or(shell),
+                            _ => {}
+                        }
+                        j = chars.len();
+                    }
+                    'f' | 'P' => {}
+                    'h' | 'V' => return Err(format!("su: -{c} is not supported in the sandbox")),
+                    _ => return Err(format!("su: unknown option -{c}")),
+                }
+            }
+            continue;
+        }
+        i -= 1;
+        break;
+    }
+    if let Some(user) = args.get(i) {
+        inv.user = Some(user.clone());
+        i += 1;
+    }
+    inv.argv.push(shell);
+    if login {
+        inv.argv.push("-l".into());
+    }
+    if let Some(c) = command {
+        inv.argv.push("-c".into());
+        inv.argv.push(c);
+    }
+    inv.argv.extend(args[i..].iter().cloned());
     Ok(inv)
 }
 
@@ -636,6 +736,23 @@ mod tests {
         assert!(parse_sudo(&s(&["-v"])).unwrap().validate);
         assert!(parse_sudo(&s(&["-nv"])).unwrap().validate);
         assert!(parse_sudo(&s(&["-l"])).unwrap().list);
+    }
+
+    #[test]
+    fn su_command_login_and_stdin_shell() {
+        let inv = parse_su(&s(&["-c", "id -u"])).unwrap();
+        assert_eq!(inv.argv, s(&["/bin/sh", "-c", "id -u"]));
+        assert!(inv.user.is_none());
+        let inv = parse_su(&s(&["-l", "root"])).unwrap();
+        assert_eq!(inv.argv, s(&["/bin/sh", "-l"]));
+        assert_eq!(inv.user.as_deref(), Some("root"));
+        let inv = parse_su(&s(&["-", "root", "-c", "x"])).unwrap();
+        assert_eq!(inv.argv, s(&["/bin/sh", "-l", "-c", "x"]));
+        let inv = parse_su(&s(&["-ps", "/bin/bash", "--command=ls", "bob"])).unwrap();
+        assert_eq!(inv.argv, s(&["/bin/bash", "-c", "ls"]));
+        assert!(inv.preserve_env);
+        assert_eq!(inv.user.as_deref(), Some("bob"));
+        assert!(parse_su(&s(&["-x"])).is_err());
     }
 
     #[test]
