@@ -212,7 +212,10 @@ sandbox [-b NAME|DIR] --reset-system
     `--root` runs have it; the shim exits with the command's status. A
     denial fails like sudo does without a password. `sudo -v` and
     `sudo -l` ask and run nothing; `-A`/`SUDO_ASKPASS`, `-n`, `-S`,
-    `-u root` are accepted, any other user refused. For `su` the command
+    `-u root` are accepted, any other user refused. `sudo -i` / `--login`
+    starts root's configured login shell in its home (or `/` if that home
+    is absent); `sudo -s` / `--shell` starts the caller's shell. With a
+    command, both shell modes run it through `-c`. For `su` the command
     is the shell (`/bin/sh`, or `-s`): with `-c` running the command,
     without it reading stdin — which is what `su -l root <<EOF` feeds it;
     no password is read, since su takes it from the terminal, not stdin.

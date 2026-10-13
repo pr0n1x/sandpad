@@ -56,6 +56,10 @@ pub struct Invocation {
     pub list: bool,
     /// `-u USER` / `--user USER`, if given
     pub user: Option<String>,
+    /// sudo's `-i` / `-s`: run a shell rather than a direct command.
+    pub shell: bool,
+    /// sudo's `-i` or su's `-l`: a login shell in root's home.
+    pub login: bool,
 }
 
 /// sudo's options: the ones that take a value are skipped with it, the
@@ -78,6 +82,11 @@ pub fn parse_sudo(args: &[String]) -> Result<Invocation, String> {
                 "preserve-env" => inv.preserve_env = true,
                 "validate" => inv.validate = true,
                 "list" => inv.list = true,
+                "login" => {
+                    inv.shell = true;
+                    inv.login = true;
+                }
+                "shell" => inv.shell = true,
                 "user" | "group" | "prompt" | "chdir" | "close-from" | "host" | "role" | "type"
                 | "other-user" | "command-timeout" => {
                     if value.is_none() {
@@ -90,7 +99,7 @@ pub fn parse_sudo(args: &[String]) -> Result<Invocation, String> {
                 "help" | "version" => {
                     return Err(format!("sudo: --{name} is not supported in the sandbox"))
                 }
-                _ => {} // -A, -n, -S, -H, -k, -K, -b, -i, -s, --askpass, --non-interactive...
+                _ => {} // --askpass, --non-interactive, --set-home...
             }
             continue;
         }
@@ -104,6 +113,11 @@ pub fn parse_sudo(args: &[String]) -> Result<Invocation, String> {
                     'E' => inv.preserve_env = true,
                     'v' => inv.validate = true,
                     'l' => inv.list = true,
+                    'i' => {
+                        inv.shell = true;
+                        inv.login = true;
+                    }
+                    's' => inv.shell = true,
                     'u' | 'g' | 'p' | 'C' | 'D' | 'h' | 'r' | 't' | 'T' | 'U' => {
                         let rest: String = chars[j..].iter().collect();
                         let value = if rest.is_empty() {
@@ -118,7 +132,7 @@ pub fn parse_sudo(args: &[String]) -> Result<Invocation, String> {
                         j = chars.len();
                     }
                     'V' => return Err("sudo: -V is not supported in the sandbox".into()),
-                    _ => {} // A n S H k K b i s e
+                    _ => {} // A n S H k K b e
                 }
             }
             continue;
@@ -249,12 +263,66 @@ pub fn parse_su(args: &[String]) -> Result<Invocation, String> {
     if login {
         inv.argv.push("-l".into());
     }
+    inv.login = login;
     if let Some(c) = command {
         inv.argv.push("-c".into());
         inv.argv.push(c);
     }
     inv.argv.extend(args[i..].iter().cloned());
     Ok(inv)
+}
+
+/// Root's home and shell in this box, including changes to its passwd file.
+pub fn root_account() -> (String, String) {
+    if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {
+        for line in passwd.lines() {
+            let fields: Vec<_> = line.split(':').collect();
+            if fields.len() >= 7 && fields[0] == "root" {
+                return (
+                    if fields[5].is_empty() {
+                        "/root"
+                    } else {
+                        fields[5]
+                    }
+                    .into(),
+                    if fields[6].is_empty() {
+                        "/bin/sh"
+                    } else {
+                        fields[6]
+                    }
+                    .into(),
+                );
+            }
+        }
+    }
+    ("/root".into(), "/bin/sh".into())
+}
+
+impl Invocation {
+    /// Resolve sudo's shell modes after parsing, using the box's root shell
+    /// for a login and the invoking user's shell for `-s`. A supplied command
+    /// runs via `-c`, with its argument boundaries preserved.
+    pub fn sudo_shell(&mut self, root_shell: &str, caller_shell: &str) {
+        if !self.shell || self.validate || self.list {
+            return;
+        }
+        let command = std::mem::take(&mut self.argv);
+        self.argv
+            .push(if self.login { root_shell } else { caller_shell }.into());
+        if self.login {
+            self.argv.push("-l".into());
+        }
+        if !command.is_empty() {
+            self.argv.push("-c".into());
+            self.argv.push(
+                command
+                    .iter()
+                    .map(|a| quote(a))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+    }
 }
 
 /// Shell-style quoting, for display.
@@ -281,6 +349,8 @@ pub struct Request {
     pub env: Vec<(String, String)>,
     /// `-E`: hand the command the whole environment
     pub preserve_env: bool,
+    /// A login shell: use root's HOME and SHELL, even with `-E`.
+    pub login: bool,
 }
 
 impl Request {
@@ -310,6 +380,7 @@ impl Request {
         let mut fields: Vec<(&str, String)> = vec![
             ("cwd", self.cwd.clone()),
             ("preserve_env", u8::from(self.preserve_env).to_string()),
+            ("login", u8::from(self.login).to_string()),
         ];
         fields.extend(self.argv.iter().map(|a| ("arg", a.clone())));
         fields.extend(self.env.iter().map(|(k, v)| ("env", format!("{k}={v}"))));
@@ -331,6 +402,7 @@ impl Request {
             match k {
                 b"cwd" => req.cwd = v,
                 b"preserve_env" => req.preserve_env = v == "1",
+                b"login" => req.login = v == "1",
                 b"arg" => req.argv.push(v),
                 b"env" => {
                     if let Some((k, v)) = v.split_once('=') {
@@ -739,6 +811,33 @@ mod tests {
     }
 
     #[test]
+    fn sudo_login_and_shell_modes() {
+        for args in [s(&["-i"]), s(&["--login"]), s(&["-niu", "root"])] {
+            let mut inv = parse_sudo(&args).unwrap();
+            assert!(inv.shell && inv.login);
+            inv.sudo_shell("/bin/bash", "/bin/zsh");
+            assert_eq!(inv.argv, s(&["/bin/bash", "-l"]));
+        }
+        for option in ["-s", "--shell"] {
+            let mut inv = parse_sudo(&s(&[option])).unwrap();
+            assert!(inv.shell && !inv.login);
+            inv.sudo_shell("/bin/bash", "/bin/zsh");
+            assert_eq!(inv.argv, s(&["/bin/zsh"]));
+        }
+        let mut inv = parse_sudo(&s(&["-i", "printf", "%s", "a b", "x'y", ""])).unwrap();
+        inv.sudo_shell("/bin/bash", "/bin/zsh");
+        assert_eq!(
+            inv.argv,
+            s(&["/bin/bash", "-l", "-c", "printf %s 'a b' 'x'\\''y' ''"])
+        );
+        for option in ["-v", "-l"] {
+            let mut inv = parse_sudo(&s(&["-i", option])).unwrap();
+            inv.sudo_shell("/bin/bash", "/bin/zsh");
+            assert!(inv.argv.is_empty());
+        }
+    }
+
+    #[test]
     fn su_command_login_and_stdin_shell() {
         let inv = parse_su(&s(&["-c", "id -u"])).unwrap();
         assert_eq!(inv.argv, s(&["/bin/sh", "-c", "id -u"]));
@@ -779,6 +878,7 @@ mod tests {
             cwd: "/a b".into(),
             env: vec![("K".into(), "v=w".into()), ("USER".into(), "me".into())],
             preserve_env: true,
+            login: true,
         };
         assert_eq!(Request::decode(&r.encode()), r);
         assert_eq!(r.user(), "me");
@@ -880,6 +980,7 @@ mod tests {
             cwd: "/".into(),
             env: vec![("USER".into(), "me".into())],
             preserve_env: false,
+            login: false,
         };
         assert_eq!(request(&sock, &req).unwrap(), Reply::Exited(3));
         let prompt = Prompt::parse(&std::fs::read_to_string(dir.join("dialog.prompt")).unwrap());

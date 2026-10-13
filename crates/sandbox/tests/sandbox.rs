@@ -923,6 +923,10 @@ struct Pty {
 
 impl Pty {
     fn start(s: &Scratch, opts: &[&str]) -> Self {
+        Self::command(s, opts, &["sh"])
+    }
+
+    fn command(s: &Scratch, opts: &[&str], command: &[&str]) -> Self {
         let (mut master, mut slave) = (-1, -1);
         // SAFETY: valid output pointers; default terminal settings and size.
         assert_eq!(
@@ -960,7 +964,7 @@ impl Pty {
         ])
         .arg(s.box_dir())
         .args(opts)
-        .arg("sh")
+        .args(command)
         .env("HOME", s.home())
         .env("XDG_RUNTIME_DIR", s.dir.join("run"))
         .env("WAYLAND_DISPLAY", "wayland-0")
@@ -1125,7 +1129,7 @@ fn interactive_root_shell_returns_to_the_requesting_shell() {
     pty.until("PTY_PROMPT> ");
     // Both nested shells read the PTY and must hand it back to the shim,
     // which exits and lets the requesting shell resume its own job control.
-    for command in ["sudo sh", "su root"] {
+    for command in ["sudo sh", "sudo -s", "su root", "sudo su", "sudo su -"] {
         let original = unsafe { libc::tcgetpgrp(pty.master.as_raw_fd()) };
         pty.output.clear();
         pty.send(&format!("{command}\n"));
@@ -1147,6 +1151,65 @@ fn interactive_root_shell_returns_to_the_requesting_shell() {
     }
     pty.send("exit 5\n");
     pty.finish(5);
+}
+
+#[test]
+fn sudo_login_starts_an_interactive_root_shell() {
+    require!(bwrap_works(), "bwrap can't create a sandbox here");
+    require!(have("fuse-overlayfs"), "fuse-overlayfs missing");
+    require!(
+        have("nsenter") && have("unshare"),
+        "namespace tools missing"
+    );
+    let s = Scratch::new("sudo-login");
+    fs::write(
+        s.dir.join("dialog"),
+        "#!/bin/sh\ncat >\"$0.prompt\"; echo approve\n",
+    )
+    .unwrap();
+    fs::set_permissions(s.dir.join("dialog"), fs::Permissions::from_mode(0o755)).unwrap();
+    // Root's shell and home must come from the box, not the caller's SHELL or
+    // HOME. A custom profile also verifies login startup without relying on
+    // the host's shell configuration.
+    // /root isn't a persistent system directory; bind a fixture home for the
+    // login shell, with the profile in a custom passwd home path.
+    let root_home = s.dir.join("root-home");
+    fs::create_dir_all(&root_home).unwrap();
+    fs::write(root_home.join(".profile"), "echo LOGIN_READY\n").unwrap();
+    let setup = s.sh(
+        &["--root"],
+        &format!(
+            "sed -i 's|^root:[^:]*:0:0:[^:]*:[^:]*:.*|root:x:0:0:root:{}:/bin/sh|' /etc/passwd",
+            root_home.display()
+        ),
+    );
+    assert!(setup.status.success(), "{}", stderr(&setup));
+    let home = root_home.to_str().unwrap();
+    let mut pty = Pty::command(&s, &["-p", "root", "-w", home], &["sudo", "-i"]);
+    pty.until("LOGIN_READY\r\n");
+    pty.send("printf 'ROOT_UID=%s\\nROOT_HOME=%s\\nROOT_SHELL=%s\\nROOT_CWD=%s\\n' \"$(id -u)\" \"$HOME\" \"$SHELL\" \"$PWD\"\n");
+    pty.until("ROOT_UID=0\r\n");
+    pty.until(&format!("ROOT_HOME={home}\r\n"));
+    pty.until("ROOT_SHELL=/bin/sh\r\n");
+    pty.until(&format!("ROOT_CWD={home}\r\n"));
+    pty.send("exit 5\n");
+    pty.finish(5);
+    let prompt = fs::read_to_string(s.dir.join("dialog.prompt")).unwrap();
+    assert!(prompt.contains("command: /bin/sh -l\n"), "{prompt}");
+    assert!(prompt.contains(&format!("cwd: {home}\n")), "{prompt}");
+    // Supplying a command must execute it in the login shell rather than
+    // opening an interactive shell or dropping arguments containing spaces.
+    let output = s
+        .sandbox()
+        .env("SANDBOX_ASKROOT_DIALOG", s.dir.join("dialog"))
+        .args(["-p", "root", "-b"])
+        .arg(s.box_dir())
+        .args([
+            "-w", home, "sudo", "--login", "printf", "%s\\n", "a b", "x'y", "",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(lines(&output), ["LOGIN_READY", "a b", "x'y", ""]);
 }
 
 #[test]

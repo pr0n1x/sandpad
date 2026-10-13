@@ -188,6 +188,10 @@ fn command(req: &Request) -> Command {
         .env("SUDO_GID", gid().to_string())
         .env("SUDO_COMMAND", req.command())
         .env("LD_PRELOAD", SHIM_INSIDE);
+    if req.login {
+        let (home, _) = sandbox_askroot::root_account();
+        cmd.env("HOME", home).env("SHELL", &req.argv[0]);
+    }
     if fs::metadata(&req.cwd).map(|m| m.is_dir()).unwrap_or(false) {
         cmd.current_dir(&req.cwd);
     }

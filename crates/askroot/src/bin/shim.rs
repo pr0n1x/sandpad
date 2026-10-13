@@ -7,7 +7,9 @@
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
-use sandbox_askroot::{parse_pkexec, parse_su, parse_sudo, request, Reply, Request, SOCKET_NAME};
+use sandbox_askroot::{
+    parse_pkexec, parse_su, parse_sudo, request, root_account, Reply, Request, SOCKET_NAME,
+};
 
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
@@ -20,10 +22,15 @@ fn main() {
         "su" => ("su", parse_su(&argv[1..])),
         _ => ("sudo", parse_sudo(&argv[1..])),
     };
-    let inv = parsed.unwrap_or_else(|e| {
+    let mut inv = parsed.unwrap_or_else(|e| {
         eprintln!("{e}");
         exit(1)
     });
+    let (root_home, root_shell) = root_account();
+    if name == "sudo" {
+        let caller_shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        inv.sudo_shell(&root_shell, &caller_shell);
+    }
     if let Some(u) = &inv.user {
         if u != "root" && u != "0" && u != "#0" {
             eprintln!("{name}: only root is available inside the sandbox, not {u}");
@@ -38,16 +45,14 @@ fn main() {
         eprintln!("{name}: XDG_RUNTIME_DIR is not set");
         exit(1)
     });
-    // a login shell starts in root's home, as su -l would have it; the
+    // a login shell starts in root's home, as sudo -i / su -l would; the
     // sandbox may not have one, then / like a shell with no home
-    let login = name == "su" && inv.argv.get(1).map(String::as_str) == Some("-l");
-    let cwd = if login {
-        if Path::new("/root").is_dir() {
-            "/root"
+    let cwd = if inv.login {
+        if Path::new(&root_home).is_dir() {
+            root_home
         } else {
-            "/"
+            "/".into()
         }
-        .to_string()
     } else {
         std::env::current_dir()
             .map(|d| d.to_string_lossy().into_owned())
@@ -58,6 +63,7 @@ fn main() {
         cwd,
         env: std::env::vars().collect(),
         preserve_env: inv.preserve_env,
+        login: inv.login,
     };
     match request(&PathBuf::from(runtime).join(SOCKET_NAME), &req) {
         Ok(Reply::Exited(status)) => {
