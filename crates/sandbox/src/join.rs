@@ -255,7 +255,7 @@ pub fn run(
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
         }
         if !new_session {
-            if let Err(e) = crate::tty::foreground() {
+            if let Err(e) = sandbox_tty_exec::foreground() {
                 eprintln!("sandbox: taking the terminal foreground group: {e}");
                 // SAFETY: ending only the forked command child.
                 unsafe { libc::_exit(125) }

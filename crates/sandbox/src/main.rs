@@ -23,9 +23,6 @@ use util::{die, home, output, realpath_e, realpath_m, warn, which};
 
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
-    if argv.get(1).map(String::as_str) == Some(tty::EXEC_OPTION) {
-        tty::exec(&argv[2..]);
-    }
     let opts = match cli::parse(argv.into_iter().skip(1).collect()) {
         Ok(o) => o,
         Err(e) => {
@@ -472,19 +469,27 @@ fn main() {
             p.into_os_string(),
         ]);
     }
+    // -i on a terminal: the app runs under sandbox-tty-exec, bound in, so
+    // it starts as the terminal's foreground group inside its own pid
+    // namespace (see tty.rs); the terminal is handed back when it exits
     let terminal = opts
         .interactive
         .then(|| tty::Terminal::capture(0))
         .flatten();
-    let tty_wrap = if terminal.is_some() {
-        let inside = runtime.join("sandbox-tty-exec");
-        let executable = std::env::current_exe()
-            .unwrap_or_else(|e| die(1, format!("finding sandbox executable: {e}")));
-        args.extend(["--ro-bind".into(), executable.into(), inside.clone().into()]);
-        vec![
-            inside.to_string_lossy().into_owned(),
-            tty::EXEC_OPTION.into(),
-        ]
+    let tty_wrap: Vec<String> = if terminal.is_some() {
+        let helper = sandbox_askroot::sibling_binary(tty::HELPER_NAME);
+        if !helper.is_file() {
+            die(
+                1,
+                format!(
+                    "-i: {} not found next to sandbox or on PATH",
+                    tty::HELPER_NAME
+                ),
+            );
+        }
+        let inside = runtime.join(tty::HELPER_NAME);
+        args.extend(["--ro-bind".into(), helper.into(), inside.clone().into()]);
+        vec![inside.to_string_lossy().into_owned()]
     } else {
         Vec::new()
     };

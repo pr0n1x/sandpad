@@ -12,3 +12,4 @@ path = "src/main.rs"
 [dependencies]
 libc.workspace = true
 sandbox-askroot = { path = "../askroot" }
+sandbox-tty-exec = { path = "../tty-exec" }

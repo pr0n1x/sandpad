@@ -13,11 +13,13 @@ cargo build --release          # needs cargo and a C compiler
 ln -s "$PWD/target/release/sandbox" ~/bin/sandbox
 ```
 
-The workspace builds three binaries, all into `target/release/`: `sandbox`
-(`crates/sandbox/`), and for `-p root` (`crates/askroot/`) the
-`sandbox-askroot-shim` that stands in for `sudo`/`pkexec` inside a sandbox
-and the `sandbox-askroot-dialog` that asks you on the host. `sandbox` looks
-for the two next to its own file first — which the symlink above resolves
+The workspace builds four binaries, all into `target/release/`: `sandbox`
+(`crates/sandbox/`); for `-p root` (`crates/askroot/`) the
+`sandbox-askroot-shim` that stands in for `sudo`/`pkexec`/`su` inside a
+sandbox and the `sandbox-askroot-dialog` that asks you on the host; and
+for `-i` (`crates/tty-exec/`) the `sandbox-tty-exec` that starts the app
+as the terminal's foreground group inside the sandbox. `sandbox` looks for
+the helpers next to its own file first — which the symlink above resolves
 to — and on `PATH` otherwise; nothing else needs them.
 
 ## What it does
@@ -87,10 +89,14 @@ sandbox [-b NAME|DIR] --reset-system
   the sandbox gets job control (like `docker run -i`). Only safe when the
   kernel has `dev.tty.legacy_tiocsti = 0` (default on modern kernels), which
   blocks the TIOCSTI terminal-injection attack `--new-session` guards against.
-  The command gets its own foreground process group inside the sandbox;
-  the launcher returns the terminal to its previous group when the command
-  exits, preserving the command's exit status. Joined commands and approved
-  `sudo`/`su` commands use the same handoff.
+  The app is started through `sandbox-tty-exec`, bound into the sandbox,
+  which makes it the terminal's foreground process group inside the
+  sandbox's own pid namespace before becoming it (a group from outside is
+  invisible in there, and a shell would fail to hand the terminal back at
+  exit and lose its exit status); `sandbox` returns the terminal to its
+  previous group when the app exits. Joined commands and approved
+  `sudo`/`su` commands get the same handoff without the helper, since
+  `sandbox` forks those itself.
 - `-s`, `--separate` — a sandbox of its own. By default a run joins a
   sandbox that is already running with the same box and the same options
   that shape it (see below); a `-s` run neither joins one nor is joined by
