@@ -1,16 +1,15 @@
-[package]
-name = "sandbox"
+[workspace]
+resolver = "2"
+members = ["crates/sandbox", "crates/askroot"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "Run an app inside strict bubblewrap isolation, with a per-box home and an optional writable system layer"
 license = "MIT"
 
-[[bin]]
-name = "sandbox"
-path = "src/main.rs"
-
-[dependencies]
+[workspace.dependencies]
 libc = "0.2"
+iced = "0.14"
 
 [profile.release]
 strip = true

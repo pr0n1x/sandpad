@@ -8,6 +8,7 @@
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::OnceLock;
@@ -37,12 +38,14 @@ struct Scratch {
 impl Scratch {
     fn new(name: &str) -> Scratch {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target/test-tmp")
+            .join("../../target/test-tmp")
             .join(format!("it-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("home")).unwrap();
         fs::create_dir_all(dir.join("run")).unwrap();
         fs::write(dir.join("run/wayland-0"), "").unwrap();
+        // as /proc/self/mounts will show it: no `..` from the crate dir
+        let dir = fs::canonicalize(dir).unwrap();
         Scratch { dir }
     }
 
@@ -192,6 +195,10 @@ fn wait_for(child: &mut Child, timeout: Duration) -> ExitStatus {
 fn uid() -> String {
     // SAFETY: always succeeds
     unsafe { libc::getuid() }.to_string()
+}
+
+fn uid_name() -> String {
+    std::env::var("USER").unwrap_or_default()
 }
 
 #[test]
@@ -807,6 +814,80 @@ fn net_gives_an_interface_and_keeps_the_real_uid() {
     assert_eq!(out[2], "1", "one interface besides lo");
     assert_eq!(out[3], uid(), "files stay the user's");
     assert_eq!(fs::read_to_string(s.box_home().join("f")).unwrap(), "f\n");
+}
+
+#[test]
+fn root_permission_asks_the_host_and_runs_the_command_as_root() {
+    require!(bwrap_works(), "bwrap can't create a sandbox here");
+    require!(have("fuse-overlayfs"), "fuse-overlayfs is not installed");
+    require!(
+        have("nsenter") && have("unshare"),
+        "nsenter/unshare missing"
+    );
+    let s = Scratch::new("askroot");
+    // a dialog that records the prompt and answers as told
+    let dialog = s.dir.join("dialog");
+    fs::write(
+        &dialog,
+        format!(
+            "#!/bin/sh\ncat > {}; echo $(cat {})\n",
+            s.path("prompt"),
+            s.path("answer")
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&dialog, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(s.path("answer"), "approve").unwrap();
+    let o = s
+        .sandbox()
+        .env("SANDBOX_ASKROOT_DIALOG", &dialog)
+        .args(["-p", "root", "-b"])
+        .arg(s.box_dir())
+        .args([
+            "sh",
+            "-c",
+            "id -u; sudo id -u; sudo sh -c 'echo hi > /usr/local/ok; echo $SUDO_USER'; \
+             cat /usr/local/ok; pkexec --user root sh -c 'echo $$ > /dev/null && echo in'; \
+             echo x | sudo cat; sudo -v && echo validated; sudo false; echo $?",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        lines(&o),
+        [
+            uid(),
+            "0".into(),
+            uid_name(),
+            "hi".into(),
+            "in".into(),
+            "x".into(),
+            "validated".into(),
+            "1".into()
+        ]
+    );
+    let prompt = fs::read_to_string(s.path("prompt")).unwrap();
+    assert!(prompt.contains("command: false\n"), "{prompt}");
+    assert!(
+        prompt.contains("app: /bin/sh\n") || prompt.contains("app: /usr/bin/sh\n"),
+        "{prompt}"
+    );
+    assert_eq!(
+        fs::read_to_string(s.box_dir().join("usr/local/ok")).unwrap(),
+        "hi\n"
+    );
+    assert_eq!(mounts_under(&s.box_dir().join(".mnt")), 0);
+
+    fs::write(s.path("answer"), "deny").unwrap();
+    let o = s
+        .sandbox()
+        .env("SANDBOX_ASKROOT_DIALOG", &dialog)
+        .args(["-p", "root", "-b"])
+        .arg(s.box_dir())
+        .args(["sh", "-c", "sudo id -u; echo $?"])
+        .output()
+        .unwrap();
+    assert_eq!(lines(&o), ["1"]);
+    assert!(stderr(&o).contains("denied"), "{}", stderr(&o));
 }
 
 #[test]

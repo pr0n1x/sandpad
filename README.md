@@ -13,6 +13,13 @@ cargo build --release          # needs cargo and a C compiler
 ln -s "$PWD/target/release/sandbox" ~/bin/sandbox
 ```
 
+The workspace builds three binaries, all into `target/release/`: `sandbox`
+(`crates/sandbox/`), and for `-p root` (`crates/askroot/`) the
+`sandbox-askroot-shim` that stands in for `sudo`/`pkexec` inside a sandbox
+and the `sandbox-askroot-dialog` that asks you on the host. `sandbox` looks
+for the two next to its own file first — which the symlink above resolves
+to — and on `PATH` otherwise; nothing else needs them.
+
 ## What it does
 
 `sandbox` launches the app with:
@@ -176,6 +183,43 @@ sandbox [-b NAME|DIR] --reset-system
       and re-sends each event inside. libudev accepts them because the
       sender's uid is the app's own.
   - `x11` — same as `-x`.
+  - `root` — `sudo` and `pkexec` inside the sandbox ask *you*, on the
+    host, whether the command may run as root in the sandbox. Vendor
+    tools do their privileged part through `sudo -A ...` or `pkexec ...`
+    (Kontur's Diag.Plugin, installers), and both are dead ends in a
+    sandbox: sudo's setuid bit means nothing under `no_new_privs` in a
+    user namespace, and pkexec needs polkit on a system bus the sandbox
+    doesn't have. With this permission `sandbox-askroot-shim` is bound
+    over `/usr/bin/sudo` and `/usr/bin/pkexec` (at the path each name
+    resolves to on the host: `/usr/bin/sudo` may be an alternatives
+    symlink). The shim parses the command line as sudo or pkexec would
+    and sends the command, its working directory, its environment and its
+    own stdin/stdout/stderr over a unix socket the `sandbox` process
+    bind-mounted into the sandbox's `$XDG_RUNTIME_DIR`. For each request
+    the `sandbox` process runs `sandbox-askroot-dialog` — a small window
+    naming the app, the box, the command and the directory, with two
+    buttons: *Approve sandboxed root access* and *Deny* (closing the
+    window denies). On approval it enters the sandbox the way a joining
+    run does (one `setns` on the sandbox's pidfd, see below) and runs the
+    command there as uid 0 on the shim's descriptors, with sudo's
+    `secure_path` and environment filtering (`-E` keeps it all), the
+    `SUDO_*` variables, no capabilities, and `rootshim.so` preloaded as
+    `--root` runs have it; the shim exits with the command's status. A
+    denial fails like sudo does without a password. `sudo -v` and
+    `sudo -l` ask and run nothing; `-A`/`SUDO_ASKPASS`, `-n`, `-S`,
+    `-u root` are accepted, any other user refused.
+    "Root" is the box's own system layer, never the host. Like `-n`, the
+    permission maps your uid to root in the sandbox's user namespace and
+    un-roots the app in a nested one, so the app runs as you and the
+    approved commands as root; and it mounts the box's layer in the
+    `--root` view (`squash_to_uid`, see `--root` below) for the whole
+    sandbox, since the plain view can't be written even by uid 0. That
+    makes the permission sticky in effect: files the approved commands
+    create carry no ownership record, so a later run of the box without
+    `-p root` shows them as root's, read-only — the same rule as for
+    anything a `--root` run installs. The dialog keeps you in the loop; it
+    is not a boundary between the app and root, since the FUSE daemon
+    sees both as the same host uid.
 - **The system layer** (no option: a box has one once `usr/`, `etc/`,
   `opt/` or `var/` exist in it, which a `--root` run creates; every start
   of that box then uses it, and `--reset-system` removes it) —

@@ -237,40 +237,9 @@ pub fn run(
     caps: &[String],
 ) -> i32 {
     let cwd = std::env::current_dir().ok();
-    // SAFETY: plain syscall
-    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, t.app, 0) } as libc::c_int;
-    if pidfd < 0 {
-        die(
-            1,
-            format!(
-                "cannot join the running sandbox: pidfd_open: {}",
-                io::Error::last_os_error()
-            ),
-        );
+    if let Err(e) = enter(t.app) {
+        die(1, format!("cannot join the running sandbox: {e}"));
     }
-    let mut flags = libc::CLONE_NEWUSER
-        | libc::CLONE_NEWIPC
-        | libc::CLONE_NEWUTS
-        | libc::CLONE_NEWNET
-        | libc::CLONE_NEWPID
-        | libc::CLONE_NEWNS;
-    // --unshare-all only tries cgroup; the host's own can't be "joined"
-    let ns_of = |pid: &str| fs::read_link(format!("/proc/{pid}/ns/cgroup")).ok();
-    if ns_of(&t.app.to_string()) != ns_of("self") {
-        flags |= libc::CLONE_NEWCGROUP;
-    }
-    // SAFETY: a valid pidfd and flags; this process is single-threaded
-    if unsafe { libc::setns(pidfd, flags) } < 0 {
-        die(
-            1,
-            format!(
-                "cannot join the running sandbox: setns: {}",
-                io::Error::last_os_error()
-            ),
-        );
-    }
-    // SAFETY: closing the fd we opened
-    unsafe { libc::close(pidfd) };
 
     // SAFETY: the child only sets up its own process state, then execs
     let pid = unsafe { libc::fork() };
@@ -321,6 +290,36 @@ pub fn run(
     } else {
         128 + libc::WTERMSIG(status)
     }
+}
+
+/// Enter the namespaces of `pid`, all at once (see above). The caller
+/// must be single-threaded; its later children are in the pid namespace.
+pub fn enter(pid: i32) -> Result<(), String> {
+    // SAFETY: plain syscall
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as libc::c_int;
+    if pidfd < 0 {
+        return Err(format!("pidfd_open: {}", io::Error::last_os_error()));
+    }
+    let mut flags = libc::CLONE_NEWUSER
+        | libc::CLONE_NEWIPC
+        | libc::CLONE_NEWUTS
+        | libc::CLONE_NEWNET
+        | libc::CLONE_NEWPID
+        | libc::CLONE_NEWNS;
+    // --unshare-all only tries cgroup; the host's own can't be "joined"
+    let ns_of = |pid: &str| fs::read_link(format!("/proc/{pid}/ns/cgroup")).ok();
+    if ns_of(&pid.to_string()) != ns_of("self") {
+        flags |= libc::CLONE_NEWCGROUP;
+    }
+    // SAFETY: a valid pidfd and flags
+    let r = unsafe { libc::setns(pidfd, flags) };
+    let err = io::Error::last_os_error();
+    // SAFETY: closing the fd we opened
+    unsafe { libc::close(pidfd) };
+    if r < 0 {
+        return Err(format!("setns: {err}"));
+    }
+    Ok(())
 }
 
 /// Names and numbers from linux/capability.h.
@@ -386,7 +385,7 @@ const PR_CAP_AMBIENT_RAISE: libc::c_ulong = 2;
 /// What bwrap does for the app: no capabilities but the ones asked for,
 /// which survive exec as ambient ones; no_new_privs. Joining the user
 /// namespace gave this process all of them.
-fn drop_caps(keep: &[String]) {
+pub fn drop_caps(keep: &[String]) {
     let mut wanted: Vec<u32> = Vec::new();
     for name in keep {
         match CAPS.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) {

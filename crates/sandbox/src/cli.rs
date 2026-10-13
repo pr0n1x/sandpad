@@ -104,6 +104,10 @@ options:
                         usb      USB and HID devices: the whole host /dev,
                                  live, and udev hot-plug events relayed in
                         x11      same as -x
+                        root     sudo and pkexec inside ask you, on the host,
+                                 whether the command may run as root in the
+                                 sandbox (a dialog per request); root means
+                                 the box's own system layer, never the host
   --root              run as root inside: uid 0 in the sandbox is your own
                       uid outside, so it grants no host privileges; files it
                       creates are yours. Gives the box a system layer (/usr,
@@ -147,6 +151,8 @@ pub struct Opts {
     pub x11: bool,
     pub camera: bool,
     pub usb: bool,
+    /// -p root: sudo/pkexec shims and the root service, asking the host
+    pub askroot: bool,
     pub root: bool,
     pub reset: bool,
     /// the app and its arguments, verbatim
@@ -277,10 +283,11 @@ fn permissions(o: &mut Opts, list: &str) -> Result<(), CliError> {
             "camera" => o.camera = true,
             "usb" => o.usb = true,
             "x11" => o.x11 = true,
+            "root" => o.askroot = true,
             "" => {}
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown permission: {other} (known: camera, usb, x11)"
+                    "unknown permission: {other} (known: camera, usb, x11, root)"
                 )))
             }
         }

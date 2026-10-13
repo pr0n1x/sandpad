@@ -1,0 +1,22 @@
+[package]
+name = "sandbox-askroot"
+description = "The pieces behind `sandbox -p root`: the sudo/pkexec shim inside the sandbox, the host dialog, and the server between them"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "sandbox_askroot"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sandbox-askroot-shim"
+path = "src/bin/shim.rs"
+
+[[bin]]
+name = "sandbox-askroot-dialog"
+path = "src/bin/dialog.rs"
+
+[dependencies]
+libc.workspace = true
+iced.workspace = true

@@ -2,6 +2,7 @@
 //! no network unless asked, a per-box home, and an optional writable system
 //! layer. See README.md.
 
+mod askroot;
 mod boxdir;
 mod cli;
 mod join;
@@ -20,7 +21,8 @@ use std::process::Command;
 use util::{die, home, output, realpath_e, realpath_m, warn, which};
 
 fn main() {
-    let opts = match cli::parse(std::env::args().skip(1).collect()) {
+    let argv: Vec<String> = std::env::args().collect();
+    let opts = match cli::parse(argv.into_iter().skip(1).collect()) {
         Ok(o) => o,
         Err(e) => {
             e.report();
@@ -52,20 +54,21 @@ fn main() {
         bind_args.extend(["--chdir".into(), cd.into()]);
     }
 
-    // --root, or -n: map the real uid to 0 inside. With -n it's required:
-    // pasta can only gain caps in the sandbox userns if its uid maps to root
-    // there (its self-hardening blocks the join otherwise) — like rootless
-    // podman/docker
+    // --root, -n or -p root: map the real uid to 0 inside. With -n it's
+    // required: pasta can only gain caps in the sandbox userns if its uid
+    // maps to root there (its self-hardening blocks the join otherwise) —
+    // like rootless podman/docker. With -p root it is what the approved
+    // commands run as
     let mut net_args: Vec<OsString> = Vec::new();
-    if opts.root || opts.net {
+    if opts.root || opts.net || opts.askroot {
         push(&mut net_args, &["--uid", "0", "--gid", "0"]);
     }
-    // -n and -p usb: the pipes bwrap gets (its helpers need the sandbox's
-    // pid), and with -n the sandbox resolv.conf — its contents come through
-    // one of them — bound at the symlink target (e.g. systemd-resolved's stub
-    // under /run), creating its directory; must come after the /etc bind or
-    // it gets buried
-    let pipes = (opts.net || opts.usb).then(net::Pipes::new);
+    // -n, -p usb and -p root: the pipes bwrap gets (its helpers need the
+    // sandbox's pid), and with -n the sandbox resolv.conf — its contents
+    // come through one of them — bound at the symlink target (e.g.
+    // systemd-resolved's stub under /run), creating its directory; must
+    // come after the /etc bind or it gets buried
+    let pipes = (opts.net || opts.usb || opts.askroot).then(net::Pipes::new);
     let mut resolv_args: Vec<OsString> = Vec::new();
     if let (Some(p), true) = (&pipes, opts.net) {
         let resolv = realpath_m(Path::new("/etc/resolv.conf"));
@@ -232,9 +235,9 @@ fn main() {
         }
     }
 
-    // -n maps the real uid to 0 (for pasta); un-root the app again unless
+    // -n and -p root map the real uid to 0; un-root the app again unless
     // --root asks for root or it's a snap (see unroot.rs)
-    let app_wrap: Vec<String> = if opts.net && !snap && !opts.root {
+    let app_wrap: Vec<String> = if (opts.net || opts.askroot) && !snap && !opts.root {
         unroot::wrapper()
     } else {
         Vec::new()
@@ -277,8 +280,6 @@ fn main() {
     } else {
         Vec::new()
     };
-    let app_prefix: Vec<String> = app_wrap.iter().chain(&bus_wrap).cloned().collect();
-
     // mirror the binary's file capabilities (e.g. ping's cap_net_raw=ep), which
     // no_new_privs would silently drop at exec, as ambient caps in the sandbox userns
     let mut cap_args: Vec<OsString> = Vec::new();
@@ -305,19 +306,23 @@ fn main() {
 
     // the shim's mountpoint file goes into the upper layer before the layer
     // is mounted: fuse-overlayfs must see it from the start (boxdir::shim_args)
-    let shim_args = if opts.root {
+    // -p root mounts the --root view too: the root service writes the
+    // system layer as uid 0, which the plain view's bookkeeping would deny
+    let root_view = opts.root || opts.askroot;
+    let shim_args = if root_view {
         boxdir::shim_args(&bx)
     } else {
         Vec::new()
     };
-    let layer = if boxdir::has_layer(&bx) || opts.root {
-        boxdir::mount_layer(&bx, opts.root)
+    let layer = if boxdir::has_layer(&bx) || root_view {
+        boxdir::mount_layer(&bx, root_view)
     } else {
         boxdir::plain()
     };
     let mut cleanup = Cleanup {
         mounts: layer.mounts.clone(),
         ro_file_mountpoint: Vec::new(),
+        files: Vec::new(),
     };
 
     // an app outside everything the sandbox shows (the system dirs, /snap, the
@@ -439,7 +444,7 @@ fn main() {
     }
     args.extend(bind_args);
     args.extend(app_bind_args);
-    args.extend(shim_args.clone());
+    args.extend(shim_args);
     args.extend([
         "--perms".into(),
         "0700".into(),
@@ -462,6 +467,13 @@ fn main() {
             p.clone().into_os_string(),
             p.into_os_string(),
         ]);
+    }
+    // -p root: the shim over sudo and pkexec, and the socket it reaches the
+    // host by; the server behind it is bound once this run is known not to
+    // join another sandbox (askroot_host below)
+    let askroot_socket = opts.askroot.then(|| askroot::socket_path(&runtime));
+    if let Some(sock) = &askroot_socket {
+        args.extend(askroot::bwrap_args(sock, &runtime));
     }
     // the host's session bus and session manager are out of reach: point
     // at the sandbox's own bus, drop the manager (its socket is in the host's
@@ -493,7 +505,7 @@ fn main() {
         .filter(|l| !l.is_empty() && !l.contains("nocsd"))
         .map(str::to_string)
         .collect();
-    if !shim_args.is_empty() {
+    if opts.root {
         preload.insert(0, boxdir::SHIM_INSIDE.into());
     }
     if !preload.is_empty() {
@@ -501,6 +513,8 @@ fn main() {
     } else if host_preload.is_some() {
         push(&mut args, &["--unsetenv", "LD_PRELOAD"]);
     }
+
+    let app_prefix: Vec<String> = app_wrap.iter().chain(&bus_wrap).cloned().collect();
 
     // a sandbox with the same box and the same shape already running gets
     // the command instead of a second sandbox (join.rs); -s opts out. What
@@ -527,6 +541,7 @@ fn main() {
         let mut parts = vec![
             format!("box={}", bx.path().display()),
             format!("root={}", opts.root),
+            format!("askroot={}", opts.askroot),
             format!("net={}", opts.net),
             format!("out_if={}", opts.out_if.as_deref().unwrap_or("")),
             format!("ipv6={}", opts.ipv6),
@@ -596,6 +611,15 @@ fn main() {
         r.register(&provides);
     }
     drop(registry);
+    let askroot_host = askroot_socket.map(|sock| {
+        cleanup.files.push(sock.clone());
+        let box_name = bx
+            .path()
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        askroot::Host::bind(&sock, box_name, app.to_string_lossy().into_owned())
+    });
 
     let code = match pipes {
         None => {
@@ -632,6 +656,7 @@ fn main() {
                 net: netconf.as_ref(),
                 snap,
                 usb: opts.usb,
+                askroot: askroot_host,
             },
             pipes,
         ),
@@ -649,22 +674,27 @@ fn bind_destinations(args: &[OsString]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// What this run leaves behind in the box, undone whichever way main() ends:
-/// the layers it mounted, and the mountpoint of the app's read-only file
-/// bind when it lies in the box home (an empty file bwrap creates there, and
-/// the directories down to it that didn't exist), deepest first.
+/// What this run leaves behind, undone whichever way main() ends: the
+/// layers it mounted, the mountpoint of the app's read-only file bind when
+/// it lies in the box home (an empty file bwrap creates there, and the
+/// directories down to it that didn't exist), deepest first, and files of
+/// its own (the -p root socket).
 struct Cleanup {
     mounts: Vec<PathBuf>,
     ro_file_mountpoint: Vec<PathBuf>,
+    files: Vec<PathBuf>,
 }
 impl Cleanup {
     fn is_empty(&self) -> bool {
-        self.mounts.is_empty() && self.ro_file_mountpoint.is_empty()
+        self.mounts.is_empty() && self.ro_file_mountpoint.is_empty() && self.files.is_empty()
     }
 }
 impl Drop for Cleanup {
     fn drop(&mut self) {
         boxdir::unmount(&self.mounts);
+        for f in &self.files {
+            let _ = fs::remove_file(f);
+        }
         for p in &self.ro_file_mountpoint {
             let _ = match fs::symlink_metadata(p) {
                 Ok(m) if m.is_dir() => fs::remove_dir(p),

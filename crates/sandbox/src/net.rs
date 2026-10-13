@@ -92,6 +92,8 @@ pub struct Helpers<'a> {
     pub snap: bool,
     /// -p usb: the udev event relay
     pub usb: bool,
+    /// -p root: the server for the sudo/pkexec shims inside
+    pub askroot: Option<crate::askroot::Host>,
 }
 
 pub struct Net {
@@ -206,8 +208,9 @@ pub fn exit_code(status: std::process::ExitStatus) -> i32 {
 }
 
 /// Run bwrap with helpers that need its namespaces: spawn it held on the
-/// block fd, attach pasta (-n), start the udev event relay (-p usb), set
-/// sysctls, release it, write the app's nested uid map, wait.
+/// block fd, attach pasta (-n), start the udev event relay (-p usb) and
+/// the root server (-p root), set sysctls, release it, write the app's
+/// nested uid map, wait.
 pub fn run(
     bwrap_args: &[OsString],
     app_wrap: &[String],
@@ -216,7 +219,12 @@ pub fn run(
     helpers: Helpers,
     pipes: Pipes,
 ) -> i32 {
-    let Helpers { net, snap, usb } = helpers;
+    let Helpers {
+        net,
+        snap,
+        usb,
+        askroot,
+    } = helpers;
     let Pipes {
         status,
         block,
@@ -309,6 +317,9 @@ pub fn run(
     } else {
         None
     };
+    if let Some(host) = askroot {
+        host.start(child_pid);
+    }
 
     let sandbox_ns = crate::unroot::namespace_of(child_pid);
     // network is up; release the app
