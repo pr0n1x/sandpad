@@ -477,16 +477,16 @@ fn main() {
         .then(|| tty::Terminal::capture(0))
         .flatten();
     let tty_wrap: Vec<String> = if terminal.is_some() {
-        let helper = sandbox_askroot::sibling_binary(tty::HELPER_NAME);
-        if !helper.is_file() {
+        let helper = sandbox_askroot::helper_binary(tty::HELPER_NAME).unwrap_or_else(|| {
             die(
                 1,
                 format!(
-                    "-i: {} not found next to sandbox or on PATH",
-                    tty::HELPER_NAME
+                    "-i: {} not found next to sandbox, in {} or on PATH",
+                    tty::HELPER_NAME,
+                    sandbox_askroot::LIBEXEC
                 ),
-            );
-        }
+            )
+        });
         let inside = runtime.join(tty::HELPER_NAME);
         args.extend(["--ro-bind".into(), helper.into(), inside.clone().into()]);
         vec![inside.to_string_lossy().into_owned()]

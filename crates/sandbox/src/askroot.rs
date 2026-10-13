@@ -23,7 +23,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use sandbox_askroot::{sibling_binary, Request, Runner, Server, Stdio, SHIM, SOCKET_NAME};
+use sandbox_askroot::{helper_binary, Request, Runner, Server, Stdio, SHIM, SOCKET_NAME};
 
 use crate::boxdir::SHIM_INSIDE;
 use crate::util::{die, gid, uid};
@@ -60,13 +60,15 @@ pub fn socket_path(runtime: &Path) -> PathBuf {
 /// a symlink; the chain inside then ends at the shim, and argv[0] still
 /// names it sudo. /bin is usr/bin inside, so /bin/su is covered too.
 pub fn bwrap_args(socket: &Path, runtime_inside: &Path) -> Vec<OsString> {
-    let shim = sibling_binary(SHIM);
-    if !shim.is_file() {
+    let shim = helper_binary(SHIM).unwrap_or_else(|| {
         die(
             1,
-            format!("-p root: {SHIM} not found next to sandbox or on PATH"),
-        );
-    }
+            format!(
+                "-p root: {SHIM} not found next to sandbox, in {} or on PATH",
+                sandbox_askroot::LIBEXEC
+            ),
+        )
+    });
     let mut args: Vec<OsString> = vec![
         "--bind".into(),
         socket.into(),

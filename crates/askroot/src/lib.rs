@@ -646,9 +646,12 @@ fn decide_and_run(ctx: &Context, req: &Request, stdio: Stdio) -> Reply {
 
 /// Show the dialog; true when approved.
 pub fn ask(prompt: &Prompt) -> Result<bool, String> {
-    let dialog = std::env::var_os(DIALOG_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| sibling_binary(DIALOG));
+    let dialog = match std::env::var_os(DIALOG_ENV) {
+        Some(d) => PathBuf::from(d),
+        None => helper_binary(DIALOG).ok_or_else(|| {
+            format!("{DIALOG} not found next to sandbox, in {LIBEXEC} or on PATH")
+        })?,
+    };
     let mut child = Command::new(&dialog)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -673,13 +676,35 @@ pub fn ask(prompt: &Prompt) -> Result<bool, String> {
     }
 }
 
-/// `name` next to this binary (a build tree, a bin dir), else as PATH finds it.
-pub fn sibling_binary(name: &str) -> PathBuf {
-    std::env::current_exe()
+/// Where the helper binaries go in a packaged install, when `sandbox`
+/// itself is in a bin dir: set at build time (`SANDBOX_LIBEXEC=...`),
+/// else the FHS place.
+pub const LIBEXEC: &str = match option_env!("SANDBOX_LIBEXEC") {
+    Some(dir) => dir,
+    None => "/usr/libexec/sandbox",
+};
+
+/// The helper binary `name`: next to this binary (a build tree, a flat
+/// bin dir, `cargo install`), else in the libexec dir (`LIBEXEC`, then
+/// `/usr/local/libexec/sandbox`), else on PATH. A real path: the result
+/// may be bind-mounted, not only run.
+pub fn helper_binary(name: &str) -> Option<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::env::current_exe()
         .ok()
-        .and_then(|e| e.parent().map(|d| d.join(name)))
-        .filter(|p| p.is_file())
-        .unwrap_or_else(|| PathBuf::from(name))
+        .and_then(|e| e.parent().map(Path::to_path_buf))
+        .into_iter()
+        .collect();
+    dirs.push(PathBuf::from(LIBEXEC));
+    dirs.push(PathBuf::from("/usr/local/libexec/sandbox"));
+    if let Some(path) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&path));
+    }
+    find_helper(name, &dirs)
+}
+
+/// The first of `dirs` that has `name` as a file.
+fn find_helper(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    dirs.iter().map(|d| d.join(name)).find(|p| p.is_file())
 }
 
 /// `path` as `/proc/self/fd/N/name`, with its directory held open as N:
@@ -944,6 +969,24 @@ mod tests {
             libc::close(r);
             libc::close(w);
         }
+    }
+
+    #[test]
+    fn helper_lookup_takes_the_first_dir_that_has_it() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/test-tmp")
+            .join(format!("helper-{}", std::process::id()));
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(b.join("x"), "").unwrap();
+        std::fs::create_dir(a.join("y")).unwrap(); // a directory doesn't count
+        std::fs::write(b.join("y"), "").unwrap();
+        let dirs = [a.clone(), b.clone()];
+        assert_eq!(find_helper("x", &dirs), Some(b.join("x")));
+        assert_eq!(find_helper("y", &dirs), Some(b.join("y")));
+        assert_eq!(find_helper("z", &dirs), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

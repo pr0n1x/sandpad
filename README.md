@@ -19,8 +19,12 @@ The workspace builds four binaries, all into `target/release/`: `sandbox`
 sandbox and the `sandbox-askroot-dialog` that asks you on the host; and
 for `-i` (`crates/tty-exec/`) the `sandbox-tty-exec` that starts the app
 as the terminal's foreground group inside the sandbox. `sandbox` looks for
-the helpers next to its own file first — which the symlink above resolves
-to — and on `PATH` otherwise; nothing else needs them.
+the three helpers, in this order: next to its own file (which the symlink
+above resolves to, so a build tree, a flat bin dir or `cargo install`
+all work), then in `/usr/libexec/sandbox/` (or the dir given as
+`SANDBOX_LIBEXEC=/some/libexec/sandbox` at build time — for a package that
+puts `sandbox` alone in a bin dir) and `/usr/local/libexec/sandbox/`, then
+on `PATH`. Nothing else needs them.
 
 ## What it does
 
