@@ -96,6 +96,8 @@ pub struct Helpers<'a> {
     pub askroot: Option<crate::askroot::Host>,
     /// Whether the command prefix creates a nested user namespace to map.
     pub unroot: bool,
+    /// --root / -p root: the rootshim's memfd, bwrap's to read at start
+    pub rootshim: Option<OwnedFd>,
 }
 
 pub struct Net {
@@ -227,6 +229,7 @@ pub fn run(
         usb,
         askroot,
         unroot,
+        rootshim,
     } = helpers;
     let Pipes {
         status,
@@ -254,6 +257,7 @@ pub fn run(
     drop(status.write);
     drop(block.read);
     drop(resolv.read);
+    drop(rootshim);
     let kill_all = |pids: &[i32]| {
         for p in pids {
             if *p > 0 {

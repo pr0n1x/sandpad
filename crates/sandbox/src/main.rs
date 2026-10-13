@@ -305,16 +305,9 @@ fn main() {
     }
     let app = app.expect("an app to run");
 
-    // the shim's mountpoint file goes into the upper layer before the layer
-    // is mounted: fuse-overlayfs must see it from the start (boxdir::shim_args)
     // -p root mounts the --root view too: the root service writes the
     // system layer as uid 0, which the plain view's bookkeeping would deny
     let root_view = opts.root || opts.askroot;
-    let shim_args = if root_view {
-        boxdir::shim_args(&bx)
-    } else {
-        Vec::new()
-    };
     let layer = if boxdir::has_layer(&bx) || root_view {
         boxdir::mount_layer(&bx, root_view)
     } else {
@@ -445,7 +438,6 @@ fn main() {
     }
     args.extend(bind_args);
     args.extend(app_bind_args);
-    args.extend(shim_args);
     args.extend([
         "--perms".into(),
         "0700".into(),
@@ -469,6 +461,12 @@ fn main() {
             p.into_os_string(),
         ]);
     }
+    // --root / -p root: the rootshim, from memory into the runtime dir
+    let rootshim = root_view.then(|| boxdir::rootshim_args(&runtime));
+    if let Some((_, a)) = &rootshim {
+        args.extend(a.iter().cloned());
+    }
+    let rootshim_fd = rootshim.map(|(fd, _)| fd);
     // -i on a terminal: the app runs under sandbox-tty-exec, bound in, so
     // it starts as the terminal's foreground group inside its own pid
     // namespace (see tty.rs); the terminal is handed back when it exits
@@ -531,7 +529,12 @@ fn main() {
         .map(str::to_string)
         .collect();
     if opts.root {
-        preload.insert(0, boxdir::SHIM_INSIDE.into());
+        preload.insert(
+            0,
+            boxdir::rootshim_inside(&runtime)
+                .to_string_lossy()
+                .into_owned(),
+        );
     }
     if !preload.is_empty() {
         push(&mut args, &["--setenv", "LD_PRELOAD", &preload.join(":")]);
@@ -649,7 +652,12 @@ fn main() {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        askroot::Host::bind(&sock, box_name, app.to_string_lossy().into_owned())
+        askroot::Host::bind(
+            &sock,
+            box_name,
+            app.to_string_lossy().into_owned(),
+            boxdir::rootshim_inside(&runtime),
+        )
     });
 
     let code = match pipes {
@@ -672,6 +680,7 @@ fn main() {
                 .args(&app_args)
                 .spawn()
                 .unwrap_or_else(|e| die(1, format!("cannot run bwrap: {e}")));
+            drop(rootshim_fd); // bwrap has it
             net::forward_signals_to(&child);
             net::exit_code(
                 child
@@ -690,6 +699,7 @@ fn main() {
                 usb: opts.usb,
                 askroot: askroot_host,
                 unroot: !app_wrap.is_empty(),
+                rootshim: rootshim_fd,
             },
             pipes,
         ),

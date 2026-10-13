@@ -523,11 +523,12 @@ fn system_layer_lifecycle() {
          echo marker > /usr/local/it-marker && echo installed; \
          test -d /var/lib && echo var",
     );
+    let preload = format!("{}/sandbox-rootshim.so", s.path("run"));
     assert_eq!(
         lines(&o),
         [
             "0",
-            "/usr/lib/sandbox-rootshim.so",
+            preload.as_str(),
             "shim-ok",
             "chown-ok",
             "installed",

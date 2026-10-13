@@ -25,7 +25,6 @@ use std::process::Command;
 
 use sandbox_askroot::{helper_binary, Request, Runner, Server, Stdio, SHIM, SOCKET_NAME};
 
-use crate::boxdir::SHIM_INSIDE;
 use crate::util::{die, gid, uid};
 
 /// What sudo would put in PATH: its `secure_path`.
@@ -91,10 +90,12 @@ pub struct Host {
     server: Server,
     box_name: String,
     app: String,
+    /// the rootshim's path inside, for the commands' LD_PRELOAD
+    preload: PathBuf,
 }
 
 impl Host {
-    pub fn bind(socket: &Path, box_name: String, app: String) -> Host {
+    pub fn bind(socket: &Path, box_name: String, app: String, preload: PathBuf) -> Host {
         let server = Server::bind(socket).unwrap_or_else(|e| {
             die(
                 1,
@@ -105,19 +106,27 @@ impl Host {
             server,
             box_name,
             app,
+            preload,
         }
     }
 
     /// Serve, running approved commands in the sandbox whose init is
     /// `sandbox_pid` (bwrap's child, in the first user namespace).
     pub fn start(self, sandbox_pid: i32) {
-        let run: Box<Runner> = Box::new(move |req, stdio| run_as_root(sandbox_pid, req, stdio));
+        let preload = self.preload;
+        let run: Box<Runner> =
+            Box::new(move |req, stdio| run_as_root(sandbox_pid, &preload, req, stdio));
         self.server.serve(self.box_name, self.app, run);
     }
 }
 
 /// Run the command as root in the sandbox; its exit status.
-fn run_as_root(sandbox_pid: i32, req: &Request, stdio: Stdio) -> Result<i32, String> {
+fn run_as_root(
+    sandbox_pid: i32,
+    preload: &Path,
+    req: &Request,
+    stdio: Stdio,
+) -> Result<i32, String> {
     // SAFETY: the child only sets up its own process state, forks and execs
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -139,7 +148,7 @@ fn run_as_root(sandbox_pid: i32, req: &Request, stdio: Stdio) -> Result<i32, Str
         // takes it. The command child is in the sandbox's PID namespace;
         // this waiting process retains host PIDs for the eventual hand-back.
         let terminal = crate::tty::Terminal::capture(stdio.stdin.as_raw_fd());
-        let mut cmd = command(req);
+        let mut cmd = command(req, preload);
         cmd.stdin(stdio.stdin)
             .stdout(stdio.stdout)
             .stderr(stdio.stderr);
@@ -173,7 +182,7 @@ fn run_as_root(sandbox_pid: i32, req: &Request, stdio: Stdio) -> Result<i32, Str
 /// The command as sudo would run it: a filtered environment unless `-E`,
 /// `secure_path`, the `SUDO_*` variables, root's identity; plus the
 /// rootshim. Capabilities are dropped the way bwrap does before the exec.
-fn command(req: &Request) -> Command {
+fn command(req: &Request, preload: &Path) -> Command {
     let mut cmd = Command::new(&req.argv[0]);
     cmd.args(&req.argv[1..]);
     cmd.env_clear();
@@ -189,7 +198,7 @@ fn command(req: &Request) -> Command {
         .env("SUDO_UID", uid().to_string())
         .env("SUDO_GID", gid().to_string())
         .env("SUDO_COMMAND", req.command())
-        .env("LD_PRELOAD", SHIM_INSIDE);
+        .env("LD_PRELOAD", preload);
     if req.login {
         let (home, _) = sandbox_askroot::root_account();
         cmd.env("HOME", home).env("SHELL", &req.argv[0]);

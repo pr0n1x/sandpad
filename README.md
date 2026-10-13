@@ -301,8 +301,9 @@ sandbox [-b NAME|DIR] --reset-system
   from then on, host upgrades included (e.g. `ld.so.cache` after a postinst
   runs `ldconfig`).
   `--root` runs preload `rootshim.so` (compiled from `rootshim.c` at build
-  time and embedded in the binary; written to the box's `.work/` and bound
-  inside), which papers over two consequences of "root" being a bare uid
+  time and embedded in the binary; handed to bwrap from memory and bound
+  inside at `$XDG_RUNTIME_DIR/sandbox-rootshim.so`, so the box holds no
+  copy of it), which papers over two consequences of "root" being a bare uid
   without capabilities: a directory created with
   mode 000 — dpkg does that for every directory, chmodding later — can't be
   opened by the FUSE daemon to finish the mkdir, so the shim keeps the

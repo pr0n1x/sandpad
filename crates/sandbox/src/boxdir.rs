@@ -8,6 +8,8 @@ use crate::util::{
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
+use std::io::{Seek, SeekFrom, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -21,7 +23,14 @@ const OWNER_XATTR: &str = "user.containers.override_stat";
 static ROOTSHIM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rootshim.so"));
 /// Where it is bound inside: under /usr, a path AppArmor lets every program
 /// load libraries from (some coreutils applets are confined separately).
-pub const SHIM_INSIDE: &str = "/usr/lib/sandbox-rootshim.so";
+/// The shim's name under the sandbox's runtime dir (`rootshim_inside`).
+pub const ROOTSHIM_NAME: &str = "sandbox-rootshim.so";
+
+/// Where the shim is inside, given the runtime dir (the same path as on
+/// the host: bwrap creates it there).
+pub fn rootshim_inside(runtime: &Path) -> PathBuf {
+    runtime.join(ROOTSHIM_NAME)
+}
 
 pub struct BoxDir {
     path: PathBuf,
@@ -202,6 +211,7 @@ pub fn mount_layer(b: &BoxDir, root: bool) -> Layer {
         }
     }
     let _ = fs::create_dir_all(b.path.join(".work"));
+    forget_old_rootshim(b);
     if !is_mountpoint(&b.path.join(".mnt/user/var"))
         && !is_mountpoint(&b.path.join(".mnt/root/var"))
     {
@@ -265,31 +275,54 @@ pub fn unmount(mounts: &[PathBuf]) {
     }
 }
 
-/// --root: the shim, written to the box's scratch dir and bound inside.
-/// The mountpoint file is created here with a normal mode, so the empty
-/// file it leaves in the box can be labeled like the rest.
-///
-/// Call before mount_layer: the file is written straight into the upper
-/// layer, and a running fuse-overlayfs must not find it there behind its
-/// back. If something walks the fresh mount first (an IDE's file watcher
-/// scanning a new directory does), the daemon has /usr/lib cached as
-/// lower-only; bwrap's create of the mountpoint then makes it copy the
-/// directory up by renaming a scratch copy over `<box>/usr/lib`, which
-/// fails with ENOTEMPTY because that directory exists and holds this file,
-/// and bwrap dies with "Can't create file at /usr/lib/sandbox-rootshim.so".
-pub fn shim_args(b: &BoxDir) -> Vec<OsString> {
-    let so = b.path.join(".work/rootshim.so");
-    let _ = fs::create_dir_all(b.path.join(".work"));
-    if fs::read(&so).map(|cur| cur != ROOTSHIM).unwrap_or(true) {
-        fs::write(&so, ROOTSHIM)
-            .unwrap_or_else(|e| die(1, format!("cannot write {}: {e}", so.display())));
+/// --root: the shim, handed to bwrap from memory and bound inside under
+/// the runtime dir, so the box holds no copy of it. The descriptor is
+/// bwrap's to read (`--ro-bind-data` takes it to EOF); it must stay open,
+/// and inheritable, until bwrap has started.
+pub fn rootshim_args(runtime: &Path) -> (OwnedFd, Vec<OsString>) {
+    // SAFETY: a fresh memfd, inheritable on purpose (no MFD_CLOEXEC)
+    let fd = unsafe { libc::memfd_create(c"sandbox-rootshim".as_ptr(), 0) };
+    if fd < 0 {
+        die(
+            1,
+            format!("memfd_create: {}", std::io::Error::last_os_error()),
+        );
     }
-    let inside_in_box = b.path.join(SHIM_INSIDE.trim_start_matches('/'));
-    let _ = fs::create_dir_all(inside_in_box.parent().unwrap());
-    if !inside_in_box.exists() {
-        let _ = fs::File::create(&inside_in_box);
+    // SAFETY: the descriptor is ours and nobody else's
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let mut f = fs::File::from(
+        fd.try_clone()
+            .unwrap_or_else(|e| die(1, format!("dup: {e}"))),
+    );
+    f.write_all(ROOTSHIM)
+        .and_then(|_| f.seek(SeekFrom::Start(0)).map(|_| ()))
+        .unwrap_or_else(|e| die(1, format!("writing the rootshim to memory: {e}")));
+    let args = vec![
+        "--perms".into(),
+        "0755".into(),
+        "--ro-bind-data".into(),
+        fd.as_raw_fd().to_string().into(),
+        rootshim_inside(runtime).into_os_string(),
+    ];
+    (fd, args)
+}
+
+/// Earlier versions kept the shim in the box: a copy in `.work/` and an
+/// empty mountpoint file in the system layer. Remove both, while the
+/// layer is not mounted (a running fuse-overlayfs must not see its upper
+/// dir change behind its back).
+fn forget_old_rootshim(b: &BoxDir) {
+    if has_mounts_under(&b.path.join(".mnt")) {
+        return;
     }
-    vec!["--ro-bind".into(), so.into_os_string(), SHIM_INSIDE.into()]
+    let _ = fs::remove_file(b.path.join(".work/rootshim.so"));
+    let placeholder = b.path.join("usr/lib").join(ROOTSHIM_NAME);
+    if fs::symlink_metadata(&placeholder)
+        .map(|m| m.is_file() && m.len() == 0)
+        .unwrap_or(false)
+    {
+        let _ = fs::remove_file(&placeholder);
+    }
 }
 
 /// Before a plain mount: label everything unrecorded root's, real mode kept.
@@ -500,22 +533,39 @@ mod tests {
     }
 
     #[test]
-    fn shim_is_written_and_bound() {
-        let d = scratch("box-shim");
+    fn rootshim_comes_from_memory_and_lands_under_the_runtime_dir() {
+        let runtime = Path::new("/run/user/1000");
+        let (fd, args) = rootshim_args(runtime);
+        assert_eq!(args[0], "--perms");
+        assert_eq!(args[1], "0755");
+        assert_eq!(args[2], "--ro-bind-data");
+        assert_eq!(args[3], fd.as_raw_fd().to_string().as_str());
+        assert_eq!(args[4], "/run/user/1000/sandbox-rootshim.so");
+        // what bwrap will read, from the start
+        use std::io::Read;
+        let mut got = Vec::new();
+        fs::File::from(fd).read_to_end(&mut got).unwrap();
+        assert_eq!(got, ROOTSHIM);
+    }
+
+    #[test]
+    fn old_rootshim_files_are_removed_from_the_box() {
+        let d = scratch("box-oldshim");
         let b = resolve(
             Some(d.join("box").to_str().unwrap()),
             false,
             None,
             Path::new("/home/user"),
         );
-        let args = shim_args(&b);
-        assert_eq!(args[0], "--ro-bind");
-        assert_eq!(args[2], SHIM_INSIDE);
-        assert_eq!(
-            fs::read(b.path.join(".work/rootshim.so")).unwrap(),
-            ROOTSHIM
-        );
-        assert!(b.path.join("usr/lib/sandbox-rootshim.so").is_file()); // the mountpoint file
+        fs::create_dir_all(b.path.join(".work")).unwrap();
+        fs::create_dir_all(b.path.join("usr/lib")).unwrap();
+        fs::write(b.path.join(".work/rootshim.so"), "old").unwrap();
+        fs::write(b.path.join("usr/lib/sandbox-rootshim.so"), "").unwrap();
+        fs::write(b.path.join("usr/lib/other"), "keep").unwrap();
+        forget_old_rootshim(&b);
+        assert!(!b.path.join(".work/rootshim.so").exists());
+        assert!(!b.path.join("usr/lib/sandbox-rootshim.so").exists());
+        assert!(b.path.join("usr/lib/other").is_file());
         let _ = fs::remove_dir_all(&d);
     }
 
