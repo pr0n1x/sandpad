@@ -1,5 +1,5 @@
 //! Integration tests: the built binary runs real bwrap sandboxes on a
-//! scratch box under `target/test-tmp`, with a throwaway `$HOME` and
+//! scratch box under `~/tmp/sandbox-tests`, with a throwaway `$HOME` and
 //! runtime dir, so nothing touches the user's own boxes. Each test checks
 //! what the app sees from inside (via `sh -c`) against what lands in the
 //! box on disk. Tests whose host prerequisites are missing (user
@@ -8,7 +8,9 @@
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::OnceLock;
@@ -37,8 +39,8 @@ struct Scratch {
 
 impl Scratch {
     fn new(name: &str) -> Scratch {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/test-tmp")
+        let dir = PathBuf::from(std::env::var_os("HOME").expect("HOME is set"))
+            .join("tmp/sandbox-tests")
             .join(format!("it-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("home")).unwrap();
@@ -908,4 +910,252 @@ fn net_with_root_keeps_root() {
     let o = s.sh(&["-n", "--root"], "id -u; cat /etc/resolv.conf");
     assert_eq!(lines(&o), ["0", "nameserver 169.254.1.1"]);
     assert_eq!(mounts_under(&s.box_dir().join(".mnt")), 0);
+}
+
+/// A real controlling terminal, with a host shell in its initial foreground
+/// group. The shell waits after the sandbox exits so the test can check the
+/// hand-back while that group still exists.
+struct Pty {
+    master: fs::File,
+    child: Child,
+    output: String,
+}
+
+impl Pty {
+    fn start(s: &Scratch, opts: &[&str]) -> Self {
+        let (mut master, mut slave) = (-1, -1);
+        // SAFETY: valid output pointers; default terminal settings and size.
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            },
+            0
+        );
+        // SAFETY: these freshly allocated descriptors are ours.
+        let (master, slave) =
+            unsafe { (fs::File::from_raw_fd(master), fs::File::from_raw_fd(slave)) };
+        // openpty doesn't set CLOEXEC; only the three standard descriptors
+        // should reach the host shell, and neither end should leak into other
+        // commands spawned by concurrent tests.
+        for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
+            assert_eq!(
+                unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+                0
+            );
+        }
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            "\"$@\"; result=$?; printf '\\nPTY_RESULT=%s\\n' \"$result\"; read finish",
+            "sh",
+            SANDBOX,
+            "-i",
+            "-b",
+        ])
+        .arg(s.box_dir())
+        .args(opts)
+        .arg("sh")
+        .env("HOME", s.home())
+        .env("XDG_RUNTIME_DIR", s.dir.join("run"))
+        .env("WAYLAND_DISPLAY", "wayland-0")
+        .env("PS1", "PTY_PROMPT> ")
+        .env_remove("LD_PRELOAD")
+        .stdin(slave.try_clone().unwrap())
+        .stdout(slave.try_clone().unwrap())
+        .stderr(slave);
+        if s.dir.join("dialog").exists() {
+            cmd.env("SANDBOX_ASKROOT_DIALOG", s.dir.join("dialog"));
+        }
+        // SAFETY: session/terminal syscalls only, in the new host shell.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = cmd.spawn().unwrap();
+        Pty {
+            master,
+            child,
+            output: String::new(),
+        }
+    }
+
+    fn send(&mut self, input: &str) {
+        self.master.write_all(input.as_bytes()).unwrap();
+    }
+
+    fn until(&mut self, marker: &str) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !self.output.contains(marker) {
+            assert!(
+                Instant::now() < deadline,
+                "waiting for {marker:?}: {}",
+                self.output
+            );
+            let mut poll = libc::pollfd {
+                fd: self.master.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: valid descriptor and buffer, with a bounded wait.
+            if unsafe { libc::poll(&mut poll, 1, 100) } > 0 {
+                let mut buffer = [0u8; 4096];
+                let n = unsafe {
+                    libc::read(
+                        self.master.as_raw_fd(),
+                        buffer.as_mut_ptr().cast(),
+                        buffer.len(),
+                    )
+                };
+                assert!(
+                    n > 0,
+                    "PTY closed while waiting for {marker:?}: {}",
+                    self.output
+                );
+                self.output
+                    .push_str(&String::from_utf8_lossy(&buffer[..n as usize]));
+            }
+        }
+    }
+
+    fn finish(mut self, status: i32) {
+        self.until(&format!("PTY_RESULT={status}\r\n"));
+        assert!(
+            !self.output.contains("Cannot set tty process group"),
+            "{}",
+            self.output
+        );
+        assert!(!self.output.contains("can't access tty"), "{}", self.output);
+        // The master can query the foreground group without belonging to the
+        // slave's session; querying the slave from this test would be ENOTTY.
+        assert_eq!(
+            unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) },
+            self.child.id() as i32,
+            "terminal not returned to the host shell: {}",
+            self.output
+        );
+        self.send("finish\n");
+        assert!(wait_for(&mut self.child, Duration::from_secs(5)).success());
+    }
+}
+
+impl Drop for Pty {
+    fn drop(&mut self) {
+        if self.child.try_wait().unwrap().is_none() {
+            // Stop the foreground job too if an assertion failed mid-session.
+            let group = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
+            if group > 0 && group != unsafe { libc::getpgrp() } {
+                unsafe { libc::kill(-group, libc::SIGKILL) };
+            }
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+#[test]
+fn interactive_shell_preserves_status_and_returns_the_terminal() {
+    require!(bwrap_works(), "bwrap can't create a sandbox here");
+    let s = Scratch::new("tty");
+    let mut pty = Pty::start(&s, &[]);
+    pty.until("PTY_PROMPT> ");
+    // Interrupt a foreground external command, then keep using the shell.
+    pty.send("sh -c 'echo SLEEP_READY; exec sleep 30'\n");
+    pty.until("SLEEP_READY\r\n");
+    pty.output.clear();
+    pty.send("\u{3}");
+    pty.until("PTY_PROMPT> ");
+    pty.send("printf 'INTERRUPTED=%s\\n' \"$?\"\n");
+    pty.until("INTERRUPTED=130\r\n");
+    pty.send("exit 5\n");
+    pty.finish(5);
+}
+
+#[test]
+fn interactive_shell_killed_by_a_signal_returns_the_terminal() {
+    require!(bwrap_works(), "bwrap can't create a sandbox here");
+    let s = Scratch::new("tty-signal");
+    let mut pty = Pty::start(&s, &[]);
+    pty.until("PTY_PROMPT> ");
+    pty.send("kill -KILL $$\n");
+    pty.finish(137);
+}
+
+#[test]
+fn interactive_join_preserves_status_and_returns_the_terminal() {
+    require!(bwrap_works(), "bwrap can't create a sandbox here");
+    let s = Scratch::new("tty-join");
+    let mut running = hold(&s, &[], "echo ready; exec sleep 30");
+    let mut pty = Pty::start(&s, &[]);
+    pty.until("PTY_PROMPT> ");
+    // A file in the existing sandbox's /tmp proves this shell joined it.
+    pty.send("echo joined > /tmp/tty-joined; exit 5\n");
+    pty.finish(5);
+    assert_eq!(lines(&s.sh(&[], "cat /tmp/tty-joined")), ["joined"]);
+    assert!(running.try_wait().unwrap().is_none());
+    running.kill().unwrap();
+    running.wait().unwrap();
+}
+
+#[test]
+fn interactive_root_shell_returns_to_the_requesting_shell() {
+    require!(bwrap_works(), "bwrap can't create a sandbox here");
+    require!(have("fuse-overlayfs"), "fuse-overlayfs missing");
+    require!(
+        have("nsenter") && have("unshare"),
+        "namespace tools missing"
+    );
+    let s = Scratch::new("tty-root");
+    fs::write(
+        s.dir.join("dialog"),
+        "#!/bin/sh\ncat >/dev/null; echo approve\n",
+    )
+    .unwrap();
+    fs::set_permissions(s.dir.join("dialog"), fs::Permissions::from_mode(0o755)).unwrap();
+    let mut pty = Pty::start(&s, &["-p", "root"]);
+    pty.until("PTY_PROMPT> ");
+    // Both nested shells read the PTY and must hand it back to the shim,
+    // which exits and lets the requesting shell resume its own job control.
+    for command in ["sudo sh", "su root"] {
+        let original = unsafe { libc::tcgetpgrp(pty.master.as_raw_fd()) };
+        pty.output.clear();
+        pty.send(&format!("{command}\n"));
+        // sudo filters PS1, so use a marker printed by the root shell instead
+        // of relying on its prompt. It cannot run until the handoff finishes.
+        pty.send("printf 'ROOT_READY=%s\\n' \"$(id -u)\"\n");
+        pty.until("ROOT_READY=0\r\n");
+        pty.output.clear();
+        pty.send("exit 7\n");
+        pty.until("PTY_PROMPT> ");
+        assert_eq!(unsafe { libc::tcgetpgrp(pty.master.as_raw_fd()) }, original);
+        pty.send("printf 'ROOT_STATUS=%s\\n' \"$?\"\n");
+        pty.until("ROOT_STATUS=7\r\n");
+        assert!(
+            !pty.output.contains("Cannot set tty process group"),
+            "{}",
+            pty.output
+        );
+    }
+    pty.send("exit 5\n");
+    pty.finish(5);
+}
+
+#[test]
+fn interactive_network_shell_preserves_status() {
+    require!(bwrap_works(), "bwrap can't create a sandbox here");
+    require!(net_works(), "network prerequisites missing");
+    let s = Scratch::new("tty-net");
+    let mut pty = Pty::start(&s, &["-n"]);
+    pty.until("PTY_PROMPT> ");
+    pty.send("exit 5\n");
+    pty.finish(5);
 }

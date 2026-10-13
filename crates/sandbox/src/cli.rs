@@ -308,10 +308,10 @@ mod tests {
         parse(args.iter().map(|s| s.to_string()).collect()).expect_err("fails")
     }
 
-    /// a scratch dir under target/, on a real filesystem
+    /// a scratch dir under ~/tmp/sandbox-tests, on a real filesystem
     fn scratch(name: &str) -> PathBuf {
-        let d = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target/test-tmp")
+        let d = crate::util::home()
+            .join("tmp/sandbox-tests")
             .join(format!("{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();

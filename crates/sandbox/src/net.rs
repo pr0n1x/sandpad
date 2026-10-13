@@ -94,6 +94,8 @@ pub struct Helpers<'a> {
     pub usb: bool,
     /// -p root: the server for the sudo/pkexec shims inside
     pub askroot: Option<crate::askroot::Host>,
+    /// Whether the command prefix creates a nested user namespace to map.
+    pub unroot: bool,
 }
 
 pub struct Net {
@@ -224,6 +226,7 @@ pub fn run(
         snap,
         usb,
         askroot,
+        unroot,
     } = helpers;
     let Pipes {
         status,
@@ -325,7 +328,7 @@ pub fn run(
     // network is up; release the app
     let _ = fs::File::from(block.write).write_all(b"\n");
     // the released app now creates its nested userns and waits for its map
-    if !app_wrap.is_empty() {
+    if unroot {
         crate::unroot::map_or_warn(child_pid, sandbox_ns.as_deref());
     }
     let status = child

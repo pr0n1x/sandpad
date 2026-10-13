@@ -133,11 +133,10 @@ fn run_as_root(sandbox_pid: i32, req: &Request, stdio: Stdio) -> Result<i32, Str
             // SAFETY: ending the forked child without the parent's exit code
             unsafe { libc::_exit(125) }
         }
-        // in the sandbox's namespaces now, pid namespace included for
-        // children: the command is one. It stays in this process's group:
-        // under -i that is the terminal's foreground group, which the
-        // shim is in too, so an interactive `sudo sh` can read the tty —
-        // in a group of its own it would be stopped at the first read
+        // Save the requesting terminal's foreground group before the command
+        // takes it. The command child is in the sandbox's PID namespace;
+        // this waiting process retains host PIDs for the eventual hand-back.
+        let terminal = crate::tty::Terminal::capture(stdio.stdin.as_raw_fd());
         let mut cmd = command(req);
         cmd.stdin(stdio.stdin)
             .stdout(stdio.stdout)
@@ -149,6 +148,7 @@ fn run_as_root(sandbox_pid: i32, req: &Request, stdio: Stdio) -> Result<i32, Str
                 127
             }
         };
+        drop(terminal);
         // SAFETY: as above
         unsafe { libc::_exit(status) }
     }
@@ -194,6 +194,7 @@ fn command(req: &Request) -> Command {
     // SAFETY: only prctl/capset syscalls between fork and exec
     unsafe {
         cmd.pre_exec(|| {
+            crate::tty::foreground()?;
             crate::join::drop_caps(&[]);
             Ok(())
         });

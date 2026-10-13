@@ -7,6 +7,7 @@ mod boxdir;
 mod cli;
 mod join;
 mod net;
+mod tty;
 mod uevent;
 mod unroot;
 mod util;
@@ -22,6 +23,9 @@ use util::{die, home, output, realpath_e, realpath_m, warn, which};
 
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
+    if argv.get(1).map(String::as_str) == Some(tty::EXEC_OPTION) {
+        tty::exec(&argv[2..]);
+    }
     let opts = match cli::parse(argv.into_iter().skip(1).collect()) {
         Ok(o) => o,
         Err(e) => {
@@ -468,6 +472,22 @@ fn main() {
             p.into_os_string(),
         ]);
     }
+    let terminal = opts
+        .interactive
+        .then(|| tty::Terminal::capture(0))
+        .flatten();
+    let tty_wrap = if terminal.is_some() {
+        let inside = runtime.join("sandbox-tty-exec");
+        let executable = std::env::current_exe()
+            .unwrap_or_else(|e| die(1, format!("finding sandbox executable: {e}")));
+        args.extend(["--ro-bind".into(), executable.into(), inside.clone().into()]);
+        vec![
+            inside.to_string_lossy().into_owned(),
+            tty::EXEC_OPTION.into(),
+        ]
+    } else {
+        Vec::new()
+    };
     // -p root: the shim over sudo and pkexec, and the socket it reaches the
     // host by; the server behind it is bound once this run is known not to
     // join another sandbox (askroot_host below)
@@ -514,7 +534,12 @@ fn main() {
         push(&mut args, &["--unsetenv", "LD_PRELOAD"]);
     }
 
-    let app_prefix: Vec<String> = app_wrap.iter().chain(&bus_wrap).cloned().collect();
+    let app_prefix: Vec<String> = app_wrap
+        .iter()
+        .chain(&tty_wrap)
+        .chain(&bus_wrap)
+        .cloned()
+        .collect();
 
     // a sandbox with the same box and the same shape already running gets
     // the command instead of a second sandbox (join.rs); -s opts out. What
@@ -604,6 +629,7 @@ fn main() {
             !opts.interactive,
             &caps,
         );
+        drop(terminal);
         drop(cleanup);
         std::process::exit(code);
     }
@@ -623,7 +649,7 @@ fn main() {
 
     let code = match pipes {
         None => {
-            if cleanup.is_empty() {
+            if cleanup.is_empty() && terminal.is_none() {
                 // nothing to clean up afterwards: become bwrap
                 let err = Command::new("bwrap")
                     .args(&args)
@@ -635,6 +661,7 @@ fn main() {
             }
             let mut child = Command::new("bwrap")
                 .args(&args)
+                .args(&tty_wrap)
                 .args(&bus_wrap)
                 .arg(&app)
                 .args(&app_args)
@@ -657,10 +684,12 @@ fn main() {
                 snap,
                 usb: opts.usb,
                 askroot: askroot_host,
+                unroot: !app_wrap.is_empty(),
             },
             pipes,
         ),
     };
+    drop(terminal);
     drop(cleanup);
     std::process::exit(code);
 }

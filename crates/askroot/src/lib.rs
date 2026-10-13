@@ -848,8 +848,8 @@ mod tests {
 
     #[test]
     fn a_request_over_the_socket_gets_the_runner_s_status() {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/test-tmp")
+        let dir = PathBuf::from(std::env::var_os("HOME").expect("HOME is set"))
+            .join("tmp/sandbox-tests")
             .join(format!("askroot-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

@@ -254,6 +254,13 @@ pub fn run(
             }
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
         }
+        if !new_session {
+            if let Err(e) = crate::tty::foreground() {
+                eprintln!("sandbox: taking the terminal foreground group: {e}");
+                // SAFETY: ending only the forked command child.
+                unsafe { libc::_exit(125) }
+            }
+        }
         let dir = match chdir {
             Some(d) => d.to_path_buf(),
             None => cwd

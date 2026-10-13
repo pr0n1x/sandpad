@@ -87,6 +87,10 @@ sandbox [-b NAME|DIR] --reset-system
   the sandbox gets job control (like `docker run -i`). Only safe when the
   kernel has `dev.tty.legacy_tiocsti = 0` (default on modern kernels), which
   blocks the TIOCSTI terminal-injection attack `--new-session` guards against.
+  The command gets its own foreground process group inside the sandbox;
+  the launcher returns the terminal to its previous group when the command
+  exits, preserving the command's exit status. Joined commands and approved
+  `sudo`/`su` commands use the same handoff.
 - `-s`, `--separate` — a sandbox of its own. By default a run joins a
   sandbox that is already running with the same box and the same options
   that shape it (see below); a `-s` run neither joins one nor is joined by
