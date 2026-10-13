@@ -204,7 +204,9 @@ sandbox [-b NAME|DIR] --reset-system
     the `sandbox` process runs `sandbox-askroot-dialog` — a small window
     naming the app, the box, the command and the directory, with two
     buttons: *Approve sandboxed root access* and *Deny* (closing the
-    window denies). On approval it enters the sandbox the way a joining
+    window denies). *Deny* starts focused; arrow keys or Tab switch the
+    highlighted button, Enter or Space activates it, and Escape denies.
+    On approval it enters the sandbox the way a joining
     run does (one `setns` on the sandbox's pidfd, see below) and runs the
     command there as uid 0 on the shim's descriptors, with sudo's
     `secure_path` and environment filtering (`-E` keeps it all), the
