@@ -8,8 +8,7 @@ use crate::util::{
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
-use std::io::{Seek, SeekFrom, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -280,31 +279,7 @@ pub fn unmount(mounts: &[PathBuf]) {
 /// bwrap's to read (`--ro-bind-data` takes it to EOF); it must stay open,
 /// and inheritable, until bwrap has started.
 pub fn rootshim_args(runtime: &Path) -> (OwnedFd, Vec<OsString>) {
-    // SAFETY: a fresh memfd, inheritable on purpose (no MFD_CLOEXEC)
-    let fd = unsafe { libc::memfd_create(c"sandbox-rootshim".as_ptr(), 0) };
-    if fd < 0 {
-        die(
-            1,
-            format!("memfd_create: {}", std::io::Error::last_os_error()),
-        );
-    }
-    // SAFETY: the descriptor is ours and nobody else's
-    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    let mut f = fs::File::from(
-        fd.try_clone()
-            .unwrap_or_else(|e| die(1, format!("dup: {e}"))),
-    );
-    f.write_all(ROOTSHIM)
-        .and_then(|_| f.seek(SeekFrom::Start(0)).map(|_| ()))
-        .unwrap_or_else(|e| die(1, format!("writing the rootshim to memory: {e}")));
-    let args = vec![
-        "--perms".into(),
-        "0755".into(),
-        "--ro-bind-data".into(),
-        fd.as_raw_fd().to_string().into(),
-        rootshim_inside(runtime).into_os_string(),
-    ];
-    (fd, args)
+    crate::util::memfd_bind_args(ROOTSHIM_NAME, ROOTSHIM, "0755", &rootshim_inside(runtime))
 }
 
 /// Earlier versions kept the shim in the box: a copy in `.work/` and an
@@ -539,7 +514,10 @@ mod tests {
         assert_eq!(args[0], "--perms");
         assert_eq!(args[1], "0755");
         assert_eq!(args[2], "--ro-bind-data");
-        assert_eq!(args[3], fd.as_raw_fd().to_string().as_str());
+        assert_eq!(
+            args[3],
+            std::os::fd::AsRawFd::as_raw_fd(&fd).to_string().as_str()
+        );
         assert_eq!(args[4], "/run/user/1000/sandbox-rootshim.so");
         // what bwrap will read, from the start
         use std::io::Read;

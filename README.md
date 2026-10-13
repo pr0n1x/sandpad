@@ -13,13 +13,13 @@ cargo build --release          # needs cargo and a C compiler
 ln -s "$PWD/target/release/sandbox" ~/bin/sandbox
 ```
 
-The workspace builds four binaries, all into `target/release/`: `sandbox`
-(`crates/sandbox/`); for `-p root` (`crates/askroot/`) the
+The workspace builds three binaries, all into `target/release/`: `sandbox`
+(`crates/sandbox/`), and for `-p root` (`crates/askroot/`) the
 `sandbox-askroot-shim` that stands in for `sudo`/`pkexec`/`su` inside a
-sandbox and the `sandbox-askroot-dialog` that asks you on the host; and
-for `-i` (`crates/tty-exec/`) the `sandbox-tty-exec` that starts the app
-as the terminal's foreground group inside the sandbox. `sandbox` looks for
-the three helpers, in this order: next to its own file (which the symlink
+sandbox and the `sandbox-askroot-dialog` that asks you on the host. (Two
+small C programs, `rootshim.c` and `ttyexec.c`, are compiled by `build.rs`
+and embedded in `sandbox`.) `sandbox` looks for
+the two helpers, in this order: next to its own file (which the symlink
 above resolves to, so a build tree, a flat bin dir or `cargo install`
 all work), then in `/usr/libexec/sandbox/` (or the dir given as
 `SANDBOX_LIBEXEC=/some/libexec/sandbox` at build time — for a package that
@@ -93,14 +93,15 @@ sandbox [-b NAME|DIR] --reset-system
   the sandbox gets job control (like `docker run -i`). Only safe when the
   kernel has `dev.tty.legacy_tiocsti = 0` (default on modern kernels), which
   blocks the TIOCSTI terminal-injection attack `--new-session` guards against.
-  The app is started through `sandbox-tty-exec`, bound into the sandbox,
-  which makes it the terminal's foreground process group inside the
-  sandbox's own pid namespace before becoming it (a group from outside is
-  invisible in there, and a shell would fail to hand the terminal back at
-  exit and lose its exit status); `sandbox` returns the terminal to its
-  previous group when the app exits. Joined commands and approved
-  `sudo`/`su` commands get the same handoff without the helper, since
-  `sandbox` forks those itself.
+  The app is started through a tiny launcher (`ttyexec.c`, embedded in
+  `sandbox` and handed to bwrap from memory at
+  `$XDG_RUNTIME_DIR/sandbox-tty-exec`), which makes it the terminal's
+  foreground process group inside the sandbox's own pid namespace before
+  becoming it (a group from outside is invisible in there, and a shell
+  would fail to hand the terminal back at exit and lose its exit status);
+  `sandbox` returns the terminal to its previous group when the app exits.
+  Joined commands and approved `sudo`/`su` commands get the same handoff
+  without the launcher, since `sandbox` forks those itself.
 - `-s`, `--separate` — a sandbox of its own. By default a run joins a
   sandbox that is already running with the same box and the same options
   that shape it (see below); a `-s` run neither joins one nor is joined by
@@ -373,7 +374,7 @@ with `-r`.
   an existing namespace isn't gated by the Ubuntu userns restriction.
 - `fuse-overlayfs` (`apt install fuse-overlayfs`) — only for boxes with a
   system layer, i.e. `--root` and everything after it.
-- to build: `cargo` and a C compiler (for `rootshim.c`).
+- to build: `cargo` and a C compiler (for `rootshim.c` and `ttyexec.c`).
 - On Ubuntu 24.04+ unprivileged user namespaces are restricted by AppArmor.
   The `apparmor` package ships `/etc/apparmor.d/bwrap-userns-restrict`,
   which lets bwrap create them and confines everything it starts to a

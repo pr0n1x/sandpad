@@ -14,6 +14,7 @@ mod util;
 
 use std::ffi::OsString;
 use std::fs;
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::process::CommandExt;
@@ -461,32 +462,26 @@ fn main() {
             p.into_os_string(),
         ]);
     }
-    // --root / -p root: the rootshim, from memory into the runtime dir
-    let rootshim = root_view.then(|| boxdir::rootshim_args(&runtime));
-    if let Some((_, a)) = &rootshim {
-        args.extend(a.iter().cloned());
+    // files bwrap gets from memory (--ro-bind-data), their descriptors
+    // kept open until it has started
+    let mut data_fds: Vec<OwnedFd> = Vec::new();
+    // --root / -p root: the rootshim, into the runtime dir
+    if root_view {
+        let (fd, a) = boxdir::rootshim_args(&runtime);
+        args.extend(a);
+        data_fds.push(fd);
     }
-    let rootshim_fd = rootshim.map(|(fd, _)| fd);
-    // -i on a terminal: the app runs under sandbox-tty-exec, bound in, so
-    // it starts as the terminal's foreground group inside its own pid
+    // -i on a terminal: the app runs under the ttyexec launcher, so it
+    // starts as the terminal's foreground group inside its own pid
     // namespace (see tty.rs); the terminal is handed back when it exits
     let terminal = opts
         .interactive
         .then(|| tty::Terminal::capture(0))
         .flatten();
     let tty_wrap: Vec<String> = if terminal.is_some() {
-        let helper = sandbox_askroot::helper_binary(tty::HELPER_NAME).unwrap_or_else(|| {
-            die(
-                1,
-                format!(
-                    "-i: {} not found next to sandbox, in {} or on PATH",
-                    tty::HELPER_NAME,
-                    sandbox_askroot::LIBEXEC
-                ),
-            )
-        });
-        let inside = runtime.join(tty::HELPER_NAME);
-        args.extend(["--ro-bind".into(), helper.into(), inside.clone().into()]);
+        let (fd, a, inside) = tty::ttyexec_args(&runtime);
+        args.extend(a);
+        data_fds.push(fd);
         vec![inside.to_string_lossy().into_owned()]
     } else {
         Vec::new()
@@ -680,7 +675,7 @@ fn main() {
                 .args(&app_args)
                 .spawn()
                 .unwrap_or_else(|e| die(1, format!("cannot run bwrap: {e}")));
-            drop(rootshim_fd); // bwrap has it
+            drop(data_fds); // bwrap has them
             net::forward_signals_to(&child);
             net::exit_code(
                 child
@@ -699,7 +694,7 @@ fn main() {
                 usb: opts.usb,
                 askroot: askroot_host,
                 unroot: !app_wrap.is_empty(),
-                rootshim: rootshim_fd,
+                data_fds,
             },
             pipes,
         ),

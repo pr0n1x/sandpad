@@ -2433,7 +2433,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "sandbox-askroot",
- "sandbox-tty-exec",
 ]
 
 [[package]]
@@ -2441,13 +2440,6 @@ name = "sandbox-askroot"
 version = "0.1.0"
 dependencies = [
  "iced",
- "libc",
-]
-
-[[package]]
-name = "sandbox-tty-exec"
-version = "0.1.0"
-dependencies = [
  "libc",
 ]
 

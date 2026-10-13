@@ -209,7 +209,7 @@ fn command(req: &Request, preload: &Path) -> Command {
     // SAFETY: only prctl/capset syscalls between fork and exec
     unsafe {
         cmd.pre_exec(|| {
-            sandbox_tty_exec::foreground()?;
+            crate::tty::foreground()?;
             crate::join::drop_caps(&[]);
             Ok(())
         });

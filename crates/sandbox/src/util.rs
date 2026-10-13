@@ -2,8 +2,11 @@
 //! and running external tools.
 
 use std::ffi::CString;
+use std::ffi::OsString;
 use std::fs;
 use std::io;
+use std::io::{Seek, SeekFrom, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -198,6 +201,44 @@ pub fn gid() -> u32 {
 
 pub fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| die(1, "HOME is not set")))
+}
+
+/// `bytes` as a file for bwrap to bind at `dest` with mode `perms`, from
+/// memory: the arguments, and the memfd they name. bwrap reads it to EOF
+/// at start (`--ro-bind-data`), so the descriptor must stay open, and
+/// inheritable, until bwrap has started; nothing is written to disk.
+pub fn memfd_bind_args(
+    label: &str,
+    bytes: &[u8],
+    perms: &str,
+    dest: &Path,
+) -> (OwnedFd, Vec<OsString>) {
+    let name = std::ffi::CString::new(label).unwrap_or_else(|_| c"sandbox".to_owned());
+    // SAFETY: a fresh memfd, inheritable on purpose (no MFD_CLOEXEC)
+    let fd = unsafe { libc::memfd_create(name.as_ptr(), 0) };
+    if fd < 0 {
+        die(
+            1,
+            format!("memfd_create: {}", std::io::Error::last_os_error()),
+        );
+    }
+    // SAFETY: the descriptor is ours and nobody else's
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let mut f = fs::File::from(
+        fd.try_clone()
+            .unwrap_or_else(|e| die(1, format!("dup: {e}"))),
+    );
+    f.write_all(bytes)
+        .and_then(|_| f.seek(SeekFrom::Start(0)).map(|_| ()))
+        .unwrap_or_else(|e| die(1, format!("writing {label} to memory: {e}")));
+    let args = vec![
+        "--perms".into(),
+        perms.into(),
+        "--ro-bind-data".into(),
+        fd.as_raw_fd().to_string().into(),
+        dest.as_os_str().to_owned(),
+    ];
+    (fd, args)
 }
 
 #[cfg(test)]
