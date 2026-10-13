@@ -134,12 +134,14 @@ fn run_as_root(sandbox_pid: i32, req: &Request, stdio: Stdio) -> Result<i32, Str
             unsafe { libc::_exit(125) }
         }
         // in the sandbox's namespaces now, pid namespace included for
-        // children: the command is one
+        // children: the command is one. It stays in this process's group:
+        // under -i that is the terminal's foreground group, which the
+        // shim is in too, so an interactive `sudo sh` can read the tty —
+        // in a group of its own it would be stopped at the first read
         let mut cmd = command(req);
         cmd.stdin(stdio.stdin)
             .stdout(stdio.stdout)
-            .stderr(stdio.stderr)
-            .process_group(0);
+            .stderr(stdio.stderr);
         let status = match cmd.status() {
             Ok(s) => crate::net::exit_code(s),
             Err(e) => {
