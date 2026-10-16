@@ -595,12 +595,12 @@ mod tests {
     fn status_merge() {
         let host = "Package: bash\nStatus: install ok installed\nArchitecture: amd64\n\n\
                     Package: libc6\nStatus: install ok installed\nArchitecture: i386\n\n\
-                    Package: diag.plugin\nStatus: deinstall ok config-files\nArchitecture: amd64\n";
+                    Package: vendor-plugin\nStatus: deinstall ok config-files\nArchitecture: amd64\n";
         let boxs = "Package: bash\nStatus: deinstall ok config-files\nArchitecture: amd64\n\n\
-                    Package: diag.plugin\nStatus: install ok installed\nArchitecture: amd64\n\n\
-                    Package: gosuslugi-plugin\nStatus: install ok installed\nArchitecture: amd64\n\n\
+                    Package: vendor-plugin\nStatus: install ok installed\nArchitecture: amd64\n\n\
+                    Package: other-plugin\nStatus: install ok installed\nArchitecture: amd64\n\n\
                     Package: libc6\nStatus: install ok installed\nArchitecture: i386\n";
-        let box_pkgs: HashSet<String> = ["diag.plugin", "gosuslugi-plugin"]
+        let box_pkgs: HashSet<String> = ["vendor-plugin", "other-plugin"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -611,9 +611,9 @@ mod tests {
         assert!(paras[0].starts_with("Package: bash\nStatus: install ok installed"));
         assert!(paras[1].starts_with("Package: libc6"));
         // the box's record replaces the host's for a box-installed package
-        assert!(paras[2].starts_with("Package: diag.plugin\nStatus: install ok installed"));
+        assert!(paras[2].starts_with("Package: vendor-plugin\nStatus: install ok installed"));
         // and is appended when the host has none
-        assert!(paras[3].starts_with("Package: gosuslugi-plugin"));
+        assert!(paras[3].starts_with("Package: other-plugin"));
         assert!(merged.ends_with("\n\n"));
         // foreign-arch file lists are named pkg:arch
         let only_i386: HashSet<String> = ["libc6:i386".to_string()].into();

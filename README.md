@@ -201,8 +201,9 @@ sandbox [-b NAME|DIR] --reset-system
   - `root` — `sudo`, `pkexec` and `su` inside the sandbox ask *you*, on
     the host, whether the command may run as root in the sandbox. Vendor
     tools do their privileged part through `sudo -A ...`, `pkexec ...` or
-    `su -l root` (Kontur's Diag.Plugin has all three, installers the
-    first), and all are dead ends in a sandbox: a setuid bit means
+    `su -l root` (a browser's native-messaging helper may try all three
+    in turn, installers the first), and all are dead ends in a sandbox: a
+    setuid bit means
     nothing under `no_new_privs` in a user namespace, and pkexec needs
     polkit on a system bus the sandbox doesn't have. With this permission
     `sandbox-askroot-shim` is bound over `/usr/bin/sudo`,
