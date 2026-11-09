@@ -1,14 +1,14 @@
 [package]
-name = "sandbox"
+name = "sandpad"
 description = "Run an app inside strict bubblewrap isolation, with a per-box home and an optional writable system layer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "sandbox"
+name = "sandpad"
 path = "src/main.rs"
 
 [dependencies]
 libc.workspace = true
-sandbox-askroot = { path = "../askroot" }
+sandpad-askroot = { path = "../askroot" }

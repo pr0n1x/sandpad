@@ -1,8 +1,8 @@
 //! `-p root`, the host side: the socket the shims inside reach the
-//! `sandbox` process by, the bwrap arguments that put the socket and the
+//! `sandpad` process by, the bwrap arguments that put the socket and the
 //! shim binary into the sandbox, and the runner that executes an approved
 //! command as root in the sandbox. The protocol, the server and the
-//! dialog are the `sandbox_askroot` crate's.
+//! dialog are the `sandpad_askroot` crate's.
 //!
 //! "Root" is uid 0 of the sandbox's first user namespace — the one bwrap
 //! makes with `--uid 0`, where the real uid is root and the app, un-rooted
@@ -23,7 +23,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use sandbox_askroot::{helper_binary, Request, Runner, Server, Stdio, SHIM, SOCKET_NAME};
+use sandpad_askroot::{helper_binary, Request, Runner, Server, Stdio, SHIM, SOCKET_NAME};
 
 use crate::util::{die, gid, uid};
 
@@ -48,7 +48,7 @@ const KEPT_ENV: &[&str] = &[
 /// The socket on the host: one per sandbox process, under the runtime dir.
 pub fn socket_path(runtime: &Path) -> PathBuf {
     runtime
-        .join("sandbox")
+        .join("sandpad")
         .join(format!("askroot-{}.sock", std::process::id()))
 }
 
@@ -63,8 +63,8 @@ pub fn bwrap_args(socket: &Path, runtime_inside: &Path) -> Vec<OsString> {
         die(
             1,
             format!(
-                "-p root: {SHIM} not found next to sandbox, in {} or on PATH",
-                sandbox_askroot::LIBEXEC
+                "-p root: {SHIM} not found next to sandpad, in {} or on PATH",
+                sandpad_askroot::LIBEXEC
             ),
         )
     });
@@ -140,7 +140,7 @@ fn run_as_root(
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
         }
         if let Err(e) = crate::join::enter(sandbox_pid) {
-            eprintln!("sandbox: cannot enter the sandbox: {e}");
+            eprintln!("sandpad: cannot enter the sandbox: {e}");
             // SAFETY: ending the forked child without the parent's exit code
             unsafe { libc::_exit(125) }
         }
@@ -155,7 +155,7 @@ fn run_as_root(
         let status = match cmd.status() {
             Ok(s) => crate::net::exit_code(s),
             Err(e) => {
-                eprintln!("sandbox: {}: {e}", req.argv[0]);
+                eprintln!("sandpad: {}: {e}", req.argv[0]);
                 127
             }
         };
@@ -200,7 +200,7 @@ fn command(req: &Request, preload: &Path) -> Command {
         .env("SUDO_COMMAND", req.command())
         .env("LD_PRELOAD", preload);
     if req.login {
-        let (home, _) = sandbox_askroot::root_account();
+        let (home, _) = sandpad_askroot::root_account();
         cmd.env("HOME", home).env("SHELL", &req.argv[0]);
     }
     if fs::metadata(&req.cwd).map(|m| m.is_dir()).unwrap_or(false) {

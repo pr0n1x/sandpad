@@ -9,7 +9,7 @@
 //! an app outside every bind bound by itself — is recorded with it instead,
 //! and a command joins if the sandbox has what it needs: a shell can join a
 //! snap's sandbox, a snap can't join a shell's. A starting sandbox registers
-//! its own pid in `$XDG_RUNTIME_DIR/sandbox/<key>-<what it has>`; the
+//! its own pid in `$XDG_RUNTIME_DIR/sandpad/<key>-<what it has>`; the
 //! process either becomes bwrap or stays its parent, so a later run finds
 //! bwrap by descending from that pid, bwrap's init inside the sandbox below
 //! it, and the app below that. The app's namespaces are the ones to join: with -n
@@ -92,7 +92,7 @@ pub struct Registry {
 
 impl Registry {
     pub fn open(runtime: &Path, key: &str) -> Registry {
-        let dir = runtime.join("sandbox");
+        let dir = runtime.join("sandpad");
         let _ = fs::create_dir(&dir);
         let path = dir.join(format!("{key}.lock"));
         let lock = fs::File::create(&path)
@@ -256,7 +256,7 @@ pub fn run(
         }
         if !new_session {
             if let Err(e) = crate::tty::foreground() {
-                eprintln!("sandbox: taking the terminal foreground group: {e}");
+                eprintln!("sandpad: taking the terminal foreground group: {e}");
                 // SAFETY: ending only the forked command child.
                 unsafe { libc::_exit(125) }
             }
@@ -277,7 +277,7 @@ pub fn run(
             };
         }
         let err = cmd.exec();
-        eprintln!("sandbox: {}: {err}", app.display());
+        eprintln!("sandpad: {}: {err}", app.display());
         // SAFETY: ending the forked child without running the parent's exit code
         unsafe { libc::_exit(127) }
     }

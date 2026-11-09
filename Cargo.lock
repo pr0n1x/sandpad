@@ -2428,15 +2428,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "sandbox"
+name = "sandpad"
 version = "0.1.0"
 dependencies = [
  "libc",
- "sandbox-askroot",
+ "sandpad-askroot",
 ]
 
 [[package]]
-name = "sandbox-askroot"
+name = "sandpad-askroot"
 version = "0.1.0"
 dependencies = [
  "iced",

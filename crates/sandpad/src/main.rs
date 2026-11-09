@@ -1,4 +1,4 @@
-//! sandbox: run an app inside strict bubblewrap isolation — own namespaces,
+//! sandpad: run an app inside strict bubblewrap isolation — own namespaces,
 //! no network unless asked, a per-box home, and an optional writable system
 //! layer. See README.md.
 
@@ -176,8 +176,8 @@ fn main() {
         None
     };
 
-    // the app: resolved like `which` does, so `sandbox ping` and
-    // `sandbox /usr/bin/ping` run the same binary and (with -a) share a box
+    // the app: resolved like `which` does, so `sandpad ping` and
+    // `sandpad /usr/bin/ping` run the same binary and (with -a) share a box
     let (app, app_args): (Option<PathBuf>, Vec<String>) = match opts.cmd.split_first() {
         Some((name, rest)) => {
             let p = which(name).unwrap_or_else(|| die(1, format!("app not found: {name}")));
@@ -367,7 +367,7 @@ fn main() {
     if !opts.interactive {
         push(&mut args, &["--new-session"]);
     }
-    push(&mut args, &["--hostname", "sandbox"]);
+    push(&mut args, &["--hostname", "sandpad"]);
     args.extend(layer.args.iter().cloned());
     push(
         &mut args,

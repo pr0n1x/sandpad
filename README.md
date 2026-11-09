@@ -1,4 +1,4 @@
-# sandbox
+# sandpad
 
 Run a GUI (or any) application inside strict boundaries using
 [bubblewrap](https://github.com/containers/bubblewrap): separate namespaces,
@@ -6,40 +6,43 @@ no network, and a private home directory — without giving the app access to
 the real `$HOME`. Useful for apps installed system-wide (e.g. from a `.deb`)
 that you don't fully trust.
 
+The project lives at <https://github.com/pr0n1x/sandpad>.
+
 ## Building and installing
 
 ```sh
+git clone https://github.com/pr0n1x/sandpad.git && cd sandpad
 cargo build --release          # needs cargo and a C compiler
-ln -s "$PWD/target/release/sandbox" ~/bin/sandbox
+ln -s "$PWD/target/release/sandpad" ~/bin/sandpad
 ```
 
-The workspace builds three binaries, all into `target/release/`: `sandbox`
-(`crates/sandbox/`), and for `-p root` (`crates/askroot/`) the
-`sandbox-askroot-shim` that stands in for `sudo`/`pkexec`/`su` inside a
-sandbox and the `sandbox-askroot-dialog` that asks you on the host. (Two
+The workspace builds three binaries, all into `target/release/`: `sandpad`
+(`crates/sandpad/`), and for `-p root` (`crates/askroot/`) the
+`sandpad-askroot-shim` that stands in for `sudo`/`pkexec`/`su` inside a
+sandbox and the `sandpad-askroot-dialog` that asks you on the host. (Two
 small C programs, `rootshim.c` and `ttyexec.c`, are compiled by `build.rs`
-and embedded in `sandbox`.) `sandbox` looks for
+and embedded in `sandpad`.) `sandpad` looks for
 the two helpers, in this order: next to its own file (which the symlink
 above resolves to, so a build tree, a flat bin dir or `cargo install`
-all work), then in `/usr/libexec/sandbox/` (or the dir given as
-`SANDBOX_LIBEXEC=/some/libexec/sandbox` at build time — for a package that
-puts `sandbox` alone in a bin dir) and `/usr/local/libexec/sandbox/`, then
+all work), then in `/usr/libexec/sandpad/` (or the dir given as
+`SANDPAD_LIBEXEC=/some/libexec/sandpad` at build time — for a package that
+puts `sandpad` alone in a bin dir) and `/usr/local/libexec/sandpad/`, then
 on `PATH`. Nothing else needs them.
 
 ## What it does
 
-`sandbox` launches the app with:
+`sandpad` launches the app with:
 
 - **Own user / PID / IPC / UTS / network namespaces** (`--unshare-all`) —
   the network namespace contains only loopback, so by default the app has no
   network access and can't see host interfaces. `-n` grants outbound internet
   through [pasta](https://passt.top/) while keeping the separate netns.
 - **A box per sandbox**: everything the app keeps lives in one directory,
-  `~/sandboxes/<name>/` — by default the shared box `~/sandboxes/default`,
+  `~/sandpad/<name>/` — by default the shared box `~/sandpad/default`,
   or a per-app / named box via `-a` / `-b`. The box is laid out like the
   root filesystem:
   - `home/<user>` (the real home path under the box, e.g.
-    `~/sandboxes/default/home/user`) is bind-mounted as the app's `$HOME`;
+    `~/sandpad/default/home/user`) is bind-mounted as the app's `$HOME`;
     the real home directory is invisible.
   - `usr/`, `etc/`, `opt/`, `var/` hold the app's changes to the system,
     once a `--root` run created them (see below). (`.work/` is the overlay's scratch
@@ -72,7 +75,7 @@ on `PATH`. Nothing else needs them.
 - **Snap binaries** (app path under `/snap`, e.g.
   `` sandbox "$(realpath /snap/firefox/current/usr/lib/firefox/firefox)" ``):
   the binary runs without snapd, with `/snap` bound read-only. For these
-  `sandbox` passes bwrap `--disable-userns`, which forbids the app to create
+  `sandpad` passes bwrap `--disable-userns`, which forbids the app to create
   user namespaces, for this reason: Ubuntu strips every capability from a
   user namespace an unprivileged program creates, so such a namespace is
   useless; Firefox's snap build creates one anyway for each tab process,
@@ -86,8 +89,8 @@ on `PATH`. Nothing else needs them.
 ## Usage
 
 ```sh
-sandbox [-i|--interactive] [-s|--separate] [-z|--zygote ID] [-w|--bind DIR]... [-W|--workdir DIR]... [-r|--ro-bind DIR]... [-d|--chdir DIR] [-b|--box NAME|DIR] [-a|--app-box] [-n|--net[IFACE]] [-6|--ipv6] [-x|--x11] [-p|--permissions LIST]... [--root] /usr/bin/someapp [args...]
-sandbox [-b NAME|DIR] --reset-system
+sandpad [-i|--interactive] [-s|--separate] [-z|--zygote ID] [-w|--bind DIR]... [-W|--workdir DIR]... [-r|--ro-bind DIR]... [-d|--chdir DIR] [-b|--box NAME|DIR] [-a|--app-box] [-n|--net[IFACE]] [-6|--ipv6] [-x|--x11] [-p|--permissions LIST]... [--root] /usr/bin/someapp [args...]
+sandpad [-b NAME|DIR] --reset-system
 ```
 
 - `-i`, `--interactive` — drop `--new-session` so an interactive shell inside
@@ -95,22 +98,22 @@ sandbox [-b NAME|DIR] --reset-system
   kernel has `dev.tty.legacy_tiocsti = 0` (default on modern kernels), which
   blocks the TIOCSTI terminal-injection attack `--new-session` guards against.
   The app is started through a tiny launcher (`ttyexec.c`, embedded in
-  `sandbox` and handed to bwrap from memory at
-  `$XDG_RUNTIME_DIR/sandbox-tty-exec`), which makes it the terminal's
+  `sandpad` and handed to bwrap from memory at
+  `$XDG_RUNTIME_DIR/sandpad-tty-exec`), which makes it the terminal's
   foreground process group inside the sandbox's own pid namespace before
   becoming it (a group from outside is invisible in there, and a shell
   would fail to hand the terminal back at exit and lose its exit status);
-  `sandbox` returns the terminal to its previous group when the app exits.
+  `sandpad` returns the terminal to its previous group when the app exits.
   Joined commands and approved `sudo`/`su` commands get the same handoff
-  without the launcher, since `sandbox` forks those itself.
+  without the launcher, since `sandpad` forks those itself.
 - `-s`, `--separate` — a sandbox of its own. By default a run joins a
   sandbox that is already running with the same box and the same options
   that shape it (see below); a `-s` run neither joins one nor is joined by
   later runs.
 - `-z ID`, `--zygote ID` — the sandbox named ID: joined if it is running,
   started under that name otherwise. Later runs with the same ID join it
-  whatever their other options: `sandbox -z ff -b work -n firefox`, then
-  `sandbox -z ff sh` for a shell next to it.
+  whatever their other options: `sandpad -z ff -b work -n firefox`, then
+  `sandpad -z ff sh` for a shell next to it.
 - `-w DIR`, `--bind DIR` — bind DIR read-write at its real path inside the
   sandbox; repeatable. This is the way to hand the app a specific
   project/data directory while the rest of `$HOME` stays hidden.
@@ -122,11 +125,11 @@ sandbox [-b NAME|DIR] --reset-system
 - `-r DIR`, `--ro-bind DIR` — like `-w`, but read-only; repeatable.
 - `-d DIR`, `--chdir DIR` — start the app in DIR, overriding `-W`'s chdir.
 - `-b NAME|DIR`, `--box NAME|DIR` — the box to use (created if missing): a
-  bare NAME means `~/sandboxes/NAME`, anything containing a slash is taken
+  bare NAME means `~/sandpad/NAME`, anything containing a slash is taken
   as a directory. Overrides `-a`.
 - `-a`, `--app-box` — use a per-app box named after the binary's path, with
-  dashes for slashes (`/usr/bin/foo` → `~/sandboxes/usr-bin-foo`), instead
-  of the default shared box `~/sandboxes/default` that all apps see together.
+  dashes for slashes (`/usr/bin/foo` → `~/sandpad/usr-bin-foo`), instead
+  of the default shared box `~/sandpad/default` that all apps see together.
 - `-n[IFACE]`, `--net[=IFACE]` — outbound internet access, still in a separate network
   namespace: bwrap creates the namespaces as usual, then `pasta` (rootless
   user-mode NAT, as used by Podman) *attaches* to the sandbox netns and relays
@@ -141,8 +144,8 @@ sandbox [-b NAME|DIR] --reset-system
   into a second userns mapping root back, so files keep their normal
   ownership (without this everything the user owns shows as `root:root`).
   Ubuntu's userns restriction strips the sandboxed app of the capabilities
-  needed to write its own uid map, so sandbox writes the map from outside,
-  from the parent (sandbox) userns — joining one isn't gated, only creating.
+  needed to write its own uid map, so sandpad writes the map from outside,
+  from the parent (sandpad) userns — joining one isn't gated, only creating.
   Exception: snap apps keep the fake root, since their nested userns is
   deliberately forbidden (see above).
   Requires the `passt` package. TCP/UDP (curl, browsers) work out
@@ -193,7 +196,7 @@ sandbox [-b NAME|DIR] --reset-system
       WebHID and WebUSB, hidapi) enumerate once at start and learn of every
       later change from those events, so a device that appears or comes back
       after start would stay invisible to the app even though its node is
-      now there. So `sandbox` keeps a helper that subscribes to udevd's
+      now there. So `sandpad` keeps a helper that subscribes to udevd's
       events on the host, joins the sandbox's user and network namespaces
       (as their owner it holds every capability there, the way pasta does)
       and re-sends each event inside. libudev accepts them because the
@@ -207,14 +210,14 @@ sandbox [-b NAME|DIR] --reset-system
     setuid bit means
     nothing under `no_new_privs` in a user namespace, and pkexec needs
     polkit on a system bus the sandbox doesn't have. With this permission
-    `sandbox-askroot-shim` is bound over `/usr/bin/sudo`,
+    `sandpad-askroot-shim` is bound over `/usr/bin/sudo`,
     `/usr/bin/pkexec` and `/usr/bin/su` (at the path each name resolves
     to on the host: `/usr/bin/sudo` may be an alternatives symlink). The
     shim parses the command line as the program it stands in for would
     and sends the command, its working directory, its environment and its
-    own stdin/stdout/stderr over a unix socket the `sandbox` process
+    own stdin/stdout/stderr over a unix socket the `sandpad` process
     bind-mounted into the sandbox's `$XDG_RUNTIME_DIR`. For each request
-    the `sandbox` process runs `sandbox-askroot-dialog` — a small window
+    the `sandpad` process runs `sandpad-askroot-dialog` — a small window
     naming the app, the box, the command and the directory, with two
     buttons: *Approve sandboxed root access* and *Deny* (closing the
     window denies). *Deny* starts focused; arrow keys or Tab switch the
@@ -282,7 +285,7 @@ sandbox [-b NAME|DIR] --reset-system
   (the `--root` view can't use that mode: it would make the daemon deny
   fake root wherever no record says otherwise), so what `--root` runs
   install, like what is dropped into the box from outside, carries no
-  record — and before a plain view is mounted, sandbox labels
+  record — and before a plain view is mounted, sandpad labels
   everything unrecorded root's (`0:0`, real mode kept). What the app
   creates gets a record of its own and stays the app's. A `--root` run
   concurrent with a plain one is seen by the running app as the app's own
@@ -310,7 +313,7 @@ sandbox [-b NAME|DIR] --reset-system
   runs `ldconfig`).
   `--root` runs preload `rootshim.so` (compiled from `rootshim.c` at build
   time and embedded in the binary; handed to bwrap from memory and bound
-  inside at `$XDG_RUNTIME_DIR/sandbox-rootshim.so`, so the box holds no
+  inside at `$XDG_RUNTIME_DIR/sandpad-rootshim.so`, so the box holds no
   copy of it), which papers over two consequences of "root" being a bare uid
   without capabilities: a directory created with
   mode 000 — dpkg does that for every directory, chmodding later — can't be
@@ -330,12 +333,12 @@ sandbox [-b NAME|DIR] --reset-system
   the overlay's `.work/` and `.mnt/`. The box then sees the host's system
   again, until the next `--root` run. Refused while a sandbox runs on the
   box; layers a sandbox left mounted by dying without cleaning up are taken
-  down on the way. Takes no app: `sandbox -b mybox --reset-system`.
+  down on the way. Takes no app: `sandpad -b mybox --reset-system`.
 
 ## Joining a running sandbox
 
 Every run makes a sandbox of its own, so two of them can't see each other:
-a second `sandbox -a firefox` is a second Firefox that can't find the
+a second `sandpad -a firefox` is a second Firefox that can't find the
 first, and there is no way to open a shell next to a running app for a
 look inside. So by default a run whose box and options match a sandbox
 already running joins it instead, like `docker exec`: the command runs in
@@ -352,7 +355,7 @@ outside every bind bound in by itself (see below) — is recorded with it,
 and a command joins if the sandbox has what it needs: a shell joins a
 snap's sandbox, a snap doesn't join a shell's. `-z ID` replaces all of
 that with the name. A starting sandbox records its process under a hash of
-the options (or the name) in `$XDG_RUNTIME_DIR/sandbox/`;
+the options (or the name) in `$XDG_RUNTIME_DIR/sandpad/`;
 a later run follows it down to bwrap's init
 and the app, and enters the app's namespaces with one `setns()` on its
 pidfd — the way `nsenter` does, and the only way that works on Ubuntu,
@@ -365,8 +368,8 @@ profile, a joined command runs under yours. A recorded sandbox that has
 exited is recognised by its process start time and ignored; one still
 starting is waited for, 5 s at most.
 
-The app name is resolved with `which`, so `sandbox ping` and
-`sandbox /usr/bin/ping` run the same binary and (with `-a`) use the same
+The app name is resolved with `which`, so `sandpad ping` and
+`sandpad /usr/bin/ping` run the same binary and (with `-a`) use the same
 box. An app that lies outside everything the sandbox shows — not under the
 system dirs, `/snap` or a `-w`/`-W`/`-r` bind, typically a binary built
 under the real home, which the box home hides — is bound into the sandbox
@@ -424,17 +427,17 @@ with `-r`.
 
 ## Launcher icons
 
-`sandbox-icon.sh` badges an app icon with a mark, `#` by default, or a
+`sandpad-icon.sh` badges an app icon with a mark, `#` by default, or a
 flag, so a sandboxed launcher is distinguishable from the real one — and,
 with a badge per box, launchers of the same app in different boxes from each
 other (there is no way to overlay an icon from a `.desktop` file itself — the
 `Icon=` key only takes a name or a path):
 
 ```sh
-sandbox-icon.sh firefox                        # icon name from the theme
-sandbox-icon.sh -o max-sandboxed /usr/share/pixmaps/max.png
-sandbox-icon.sh -o google-chrome-work -m W google-chrome   # a "W" badge
-sandbox-icon.sh -o google-chrome-rfgov -f ru google-chrome # a flag badge
+sandpad-icon.sh firefox                        # icon name from the theme
+sandpad-icon.sh -o max-sandboxed /usr/share/pixmaps/max.png
+sandpad-icon.sh -o google-chrome-work -m W google-chrome   # a "W" badge
+sandpad-icon.sh -o google-chrome-rfgov -f ru google-chrome # a flag badge
 ```
 
 It composites the badge onto the icon (PNG or SVG, name or path), installs

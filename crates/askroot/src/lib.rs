@@ -1,19 +1,19 @@
-//! `sandbox -p root`: a program inside a sandbox runs `sudo` or `pkexec`,
+//! `sandpad -p root`: a program inside a sandbox runs `sudo` or `pkexec`,
 //! the user is asked on the host, and the command runs as root inside the
 //! sandbox if they approve. Three parts:
 //!
-//! - the *shim* (`sandbox-askroot-shim`), bound over `/usr/bin/sudo`,
+//! - the *shim* (`sandpad-askroot-shim`), bound over `/usr/bin/sudo`,
 //!   `/usr/bin/pkexec` and `/usr/bin/su` in the sandbox: it parses the command line it was
 //!   called with and sends a [`Request`] — the command, the working
 //!   directory, the environment — together with its own stdin, stdout and
 //!   stderr (SCM_RIGHTS) over a unix socket the host bind-mounted into the
 //!   sandbox ([`request`]);
-//! - the *server* ([`Server`]), a thread of the `sandbox` process on the
+//! - the *server* ([`Server`]), a thread of the `sandpad` process on the
 //!   host: for each request it runs the dialog and, if approved, a runner
 //!   the caller provides, which executes the command on the shim's
 //!   descriptors and returns its exit status; the shim gets a [`Reply`]
 //!   and exits with that status;
-//! - the *dialog* (`sandbox-askroot-dialog`), a window with Approve and
+//! - the *dialog* (`sandpad-askroot-dialog`), a window with Approve and
 //!   Deny, a process of its own because a window's event loop wants a
 //!   main thread of its own: it reads a [`Prompt`] on stdin and prints
 //!   the answer.
@@ -33,13 +33,13 @@ use std::process::Command;
 use std::sync::Arc;
 
 /// The socket's name under `$XDG_RUNTIME_DIR` inside the sandbox.
-pub const SOCKET_NAME: &str = "sandbox-askroot.sock";
+pub const SOCKET_NAME: &str = "sandpad-askroot.sock";
 /// The shim binary's name.
-pub const SHIM: &str = "sandbox-askroot-shim";
+pub const SHIM: &str = "sandpad-askroot-shim";
 /// The dialog binary's name.
-pub const DIALOG: &str = "sandbox-askroot-dialog";
+pub const DIALOG: &str = "sandpad-askroot-dialog";
 /// Set on the host, this runs instead of the dialog binary (tests).
-pub const DIALOG_ENV: &str = "SANDBOX_ASKROOT_DIALOG";
+pub const DIALOG_ENV: &str = "SANDPAD_ASKROOT_DIALOG";
 
 // --- the command line of sudo and pkexec -----------------------------------
 
@@ -566,7 +566,7 @@ impl Server {
                         let ctx = ctx.clone();
                         std::thread::spawn(move || handle(&ctx, s));
                     }
-                    Err(e) => eprintln!("sandbox: askroot: accept: {e}"),
+                    Err(e) => eprintln!("sandpad: askroot: accept: {e}"),
                 }
             }
         });
@@ -586,7 +586,7 @@ fn handle(ctx: &Context, stream: UnixStream) {
         Err(e) => Reply::Error(format!("bad request: {e}")),
     };
     if let Reply::Error(e) = &reply {
-        eprintln!("sandbox: askroot: {e}");
+        eprintln!("sandpad: askroot: {e}");
     }
     // best effort: the shim may be gone already
     let _ = (&stream).write_all(&reply.encode());
@@ -649,7 +649,7 @@ pub fn ask(prompt: &Prompt) -> Result<bool, String> {
     let dialog = match std::env::var_os(DIALOG_ENV) {
         Some(d) => PathBuf::from(d),
         None => helper_binary(DIALOG).ok_or_else(|| {
-            format!("{DIALOG} not found next to sandbox, in {LIBEXEC} or on PATH")
+            format!("{DIALOG} not found next to sandpad, in {LIBEXEC} or on PATH")
         })?,
     };
     let mut child = Command::new(&dialog)
@@ -676,17 +676,17 @@ pub fn ask(prompt: &Prompt) -> Result<bool, String> {
     }
 }
 
-/// Where the helper binaries go in a packaged install, when `sandbox`
-/// itself is in a bin dir: set at build time (`SANDBOX_LIBEXEC=...`),
+/// Where the helper binaries go in a packaged install, when `sandpad`
+/// itself is in a bin dir: set at build time (`SANDPAD_LIBEXEC=...`),
 /// else the FHS place.
-pub const LIBEXEC: &str = match option_env!("SANDBOX_LIBEXEC") {
+pub const LIBEXEC: &str = match option_env!("SANDPAD_LIBEXEC") {
     Some(dir) => dir,
-    None => "/usr/libexec/sandbox",
+    None => "/usr/libexec/sandpad",
 };
 
 /// The helper binary `name`: next to this binary (a build tree, a flat
 /// bin dir, `cargo install`), else in the libexec dir (`LIBEXEC`, then
-/// `/usr/local/libexec/sandbox`), else on PATH. A real path: the result
+/// `/usr/local/libexec/sandpad`), else on PATH. A real path: the result
 /// may be bind-mounted, not only run.
 pub fn helper_binary(name: &str) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::current_exe()
@@ -695,7 +695,7 @@ pub fn helper_binary(name: &str) -> Option<PathBuf> {
         .into_iter()
         .collect();
     dirs.push(PathBuf::from(LIBEXEC));
-    dirs.push(PathBuf::from("/usr/local/libexec/sandbox"));
+    dirs.push(PathBuf::from("/usr/local/libexec/sandpad"));
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path));
     }
@@ -992,7 +992,7 @@ mod tests {
     #[test]
     fn a_request_over_the_socket_gets_the_runner_s_status() {
         let dir = PathBuf::from(std::env::var_os("HOME").expect("HOME is set"))
-            .join("tmp/sandbox-tests")
+            .join("tmp/sandpad-tests")
             .join(format!("askroot-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

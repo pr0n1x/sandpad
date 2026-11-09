@@ -1,5 +1,5 @@
 //! The shim: what runs as `/usr/bin/sudo`, `/usr/bin/pkexec` and
-//! `/usr/bin/su` inside a `sandbox -p root` sandbox. Parses the command line as the program it
+//! `/usr/bin/su` inside a `sandpad -p root` sandbox. Parses the command line as the program it
 //! stands in for would, sends the request to the host over the socket in
 //! `$XDG_RUNTIME_DIR`, and exits with the command's status — or fails the
 //! way sudo does without a password.
@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
-use sandbox_askroot::{
+use sandpad_askroot::{
     parse_pkexec, parse_su, parse_sudo, request, root_account, Reply, Request, SOCKET_NAME,
 };
 
@@ -84,7 +84,7 @@ fn main() {
             exit(1)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!("{name}: no root service in this sandbox (it needs `sandbox -p root`)");
+            eprintln!("{name}: no root service in this sandbox (it needs `sandpad -p root`)");
             exit(1)
         }
         Err(e) => {

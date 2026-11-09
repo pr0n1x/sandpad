@@ -3,7 +3,7 @@
 # into the user's icon theme, so a sandboxed launcher can be told apart from
 # the real one — and, with different badges, from each other.
 #
-#   sandbox-icon.sh [-o NAME] [-m MARK | -f FLAG] ICON
+#   sandpad-icon.sh [-o NAME] [-m MARK | -f FLAG] ICON
 #
 # ICON is an icon name (looked up in the hicolor theme and /usr/share/pixmaps)
 # or a path to a PNG/SVG. MARK is the text drawn in the badge: a character or
@@ -17,7 +17,7 @@
 # an Icon= line. Needs ImageMagick 7 (magick).
 set -eu
 
-usage() { echo "usage: sandbox-icon.sh [-o NAME] [-m MARK | -f FLAG] ICON" >&2; exit 2; }
+usage() { echo "usage: sandpad-icon.sh [-o NAME] [-m MARK | -f FLAG] ICON" >&2; exit 2; }
 
 NAME=""
 MARK=""
@@ -34,7 +34,7 @@ shift $((OPTIND - 1))
 [ $# -eq 1 ] || usage
 ICON="$1"
 if [ -n "$MARK" ] && [ -n "$FLAG" ]; then
-  echo "sandbox-icon.sh: -m and -f are exclusive" >&2; exit 2
+  echo "sandpad-icon.sh: -m and -f are exclusive" >&2; exit 2
 fi
 [ -n "$MARK" ] || [ -n "$FLAG" ] || MARK="#"
 
@@ -53,7 +53,7 @@ else
     [ -f "$F" ] && SRC="$F" && break
   done
 fi
-[ -n "$SRC" ] || { echo "sandbox-icon.sh: icon not found: $ICON" >&2; exit 1; }
+[ -n "$SRC" ] || { echo "sandpad-icon.sh: icon not found: $ICON" >&2; exit 1; }
 if [ -z "$NAME" ]; then
   NAME="$(basename "$ICON")"; NAME="${NAME%.*}-sandboxed"
 fi
@@ -95,7 +95,7 @@ EOF
 </svg>
 EOF
       FLAG="$TMP/flag.svg" ;;
-    *) [ -f "$FLAG" ] || { echo "sandbox-icon.sh: flag not found: $FLAG" >&2; exit 1; } ;;
+    *) [ -f "$FLAG" ] || { echo "sandpad-icon.sh: flag not found: $FLAG" >&2; exit 1; } ;;
   esac
   # the flag, scaled to cover the badge and cropped to its centre, clipped to
   # the rounded square (DstIn keeps the flag where the mask is opaque)

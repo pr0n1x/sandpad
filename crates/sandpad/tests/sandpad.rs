@@ -1,5 +1,5 @@
 //! Integration tests: the built binary runs real bwrap sandboxes on a
-//! scratch box under `~/tmp/sandbox-tests`, with a throwaway `$HOME` and
+//! scratch box under `~/tmp/sandpad-tests`, with a throwaway `$HOME` and
 //! runtime dir, so nothing touches the user's own boxes. Each test checks
 //! what the app sees from inside (via `sh -c`) against what lands in the
 //! box on disk. Tests whose host prerequisites are missing (user
@@ -16,7 +16,7 @@ use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-const SANDBOX: &str = env!("CARGO_BIN_EXE_sandbox");
+const SANDPAD: &str = env!("CARGO_BIN_EXE_sandpad");
 
 /// Skip the test, with the reason, when a host prerequisite is missing.
 macro_rules! require {
@@ -40,7 +40,7 @@ struct Scratch {
 impl Scratch {
     fn new(name: &str) -> Scratch {
         let dir = PathBuf::from(std::env::var_os("HOME").expect("HOME is set"))
-            .join("tmp/sandbox-tests")
+            .join("tmp/sandpad-tests")
             .join(format!("it-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("home")).unwrap();
@@ -70,8 +70,8 @@ impl Scratch {
     }
 
     /// The binary in this environment; the box is not chosen yet.
-    fn sandbox(&self) -> Command {
-        let mut c = Command::new(SANDBOX);
+    fn sandpad(&self) -> Command {
+        let mut c = Command::new(SANDPAD);
         c.env("HOME", self.home())
             .env("XDG_RUNTIME_DIR", self.dir.join("run"))
             .env("WAYLAND_DISPLAY", "wayland-0")
@@ -79,25 +79,25 @@ impl Scratch {
         c
     }
 
-    /// `sandbox <opts> -b <box> sh -c <script>`, run to completion.
+    /// `sandpad <opts> -b <box> sh -c <script>`, run to completion.
     fn sh(&self, opts: &[&str], script: &str) -> Output {
-        self.sandbox()
+        self.sandpad()
             .args(opts)
             .arg("-b")
             .arg(self.box_dir())
             .args(["sh", "-c", script])
             .output()
-            .expect("runs sandbox")
+            .expect("runs sandpad")
     }
 
-    /// `sandbox -b <box> --reset-system`
+    /// `sandpad -b <box> --reset-system`
     fn reset(&self) -> Output {
-        self.sandbox()
+        self.sandpad()
             .arg("-b")
             .arg(self.box_dir())
             .arg("--reset-system")
             .output()
-            .expect("runs sandbox")
+            .expect("runs sandpad")
     }
 }
 
@@ -118,7 +118,7 @@ fn stderr(o: &Output) -> String {
 fn lines(o: &Output) -> Vec<String> {
     assert!(
         o.status.success(),
-        "sandbox failed ({}): {}",
+        "sandpad failed ({}): {}",
         o.status,
         stderr(o)
     );
@@ -189,7 +189,7 @@ fn wait_for(child: &mut Child, timeout: Duration) -> ExitStatus {
         if let Some(s) = child.try_wait().unwrap() {
             return s;
         }
-        assert!(Instant::now() < deadline, "sandbox did not exit in time");
+        assert!(Instant::now() < deadline, "sandpad did not exit in time");
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -250,7 +250,7 @@ fn system_is_read_only_offline_and_renamed() {
     assert_eq!(
         lines(&o),
         [
-            "sandbox",
+            "sandpad",
             "lo", // the only interface: no network
             "read-only",
             "read-only",
@@ -343,7 +343,7 @@ fn exit_status_stdin_and_stdout_pass_through() {
     let o = s.sh(&[], "exit 7");
     assert_eq!(o.status.code(), Some(7));
     let mut child = s
-        .sandbox()
+        .sandpad()
         .arg("-b")
         .arg(s.box_dir())
         .args(["sh", "-c", "tr a-z A-Z"])
@@ -420,13 +420,13 @@ fn an_app_outside_every_bind_is_bound_read_only_by_itself() {
     fs::set_permissions(&exe, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     fs::write(s.dir.join("app/sibling"), "").unwrap();
     let run = |opts: &[&str]| {
-        s.sandbox()
+        s.sandpad()
             .args(opts)
             .arg("-b")
             .arg(s.box_dir())
             .arg(&exe)
             .output()
-            .expect("runs sandbox")
+            .expect("runs sandpad")
     };
     assert_eq!(lines(&run(&[])), ["ran", "read-only", "hidden"]);
     // under a -r bind the directory is already there, sibling included
@@ -440,7 +440,7 @@ fn an_app_outside_every_bind_is_bound_read_only_by_itself() {
     let under_home = s.home().join("src/proj/run");
     fs::copy(&exe, &under_home).unwrap();
     let o = s
-        .sandbox()
+        .sandpad()
         .arg("-b")
         .arg(s.box_dir())
         .arg(&under_home)
@@ -456,44 +456,44 @@ fn default_and_per_app_boxes_are_created_under_home() {
     let s = Scratch::new("boxes");
     let rel_home = s.home();
     let rel_home = rel_home.strip_prefix("/").unwrap();
-    let sandboxes = s.home().join("sandboxes");
-    let o = s.sandbox().args(["sh", "-c", "true"]).output().unwrap();
+    let boxes = s.home().join("sandpad");
+    let o = s.sandpad().args(["sh", "-c", "true"]).output().unwrap();
     lines(&o);
-    assert!(sandboxes.join("default").join(rel_home).is_dir());
-    // -a: named after the binary's path; -b NAME: under ~/sandboxes
+    assert!(boxes.join("default").join(rel_home).is_dir());
+    // -a: named after the binary's path; -b NAME: under ~/sandpad
     let o = s
-        .sandbox()
+        .sandpad()
         .args(["-a", "/usr/bin/sh", "-c", "true"])
         .output()
         .unwrap();
     lines(&o);
-    assert!(sandboxes.join("usr-bin-sh").join(rel_home).is_dir());
+    assert!(boxes.join("usr-bin-sh").join(rel_home).is_dir());
     let o = s
-        .sandbox()
+        .sandpad()
         .args(["-b", "named", "sh", "-c", "true"])
         .output()
         .unwrap();
     lines(&o);
-    assert!(sandboxes.join("named").join(rel_home).is_dir());
+    assert!(boxes.join("named").join(rel_home).is_dir());
 }
 
 #[test]
 fn usage_errors_and_help_through_the_binary() {
     let s = Scratch::new("usage");
-    let o = s.sandbox().output().unwrap();
+    let o = s.sandpad().output().unwrap();
     assert_eq!(o.status.code(), Some(2));
-    assert!(stderr(&o).starts_with("usage: sandbox"));
-    let o = s.sandbox().arg("-h").output().unwrap();
+    assert!(stderr(&o).starts_with("usage: sandpad"));
+    let o = s.sandpad().arg("-h").output().unwrap();
     assert_eq!(o.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&o.stdout).contains("--reset-system"));
-    let o = s.sandbox().arg("--bogus").arg("sh").output().unwrap();
+    let o = s.sandpad().arg("--bogus").arg("sh").output().unwrap();
     assert_eq!(o.status.code(), Some(2));
     assert!(stderr(&o).contains("unrecognized option '--bogus'"));
-    let o = s.sandbox().arg("no-such-app-here").output().unwrap();
+    let o = s.sandpad().arg("no-such-app-here").output().unwrap();
     assert_eq!(o.status.code(), Some(1));
     assert!(stderr(&o).contains("app not found: no-such-app-here"));
     let o = s
-        .sandbox()
+        .sandpad()
         .args(["-w", "/nonexistent/dir", "sh"])
         .output()
         .unwrap();
@@ -523,7 +523,7 @@ fn system_layer_lifecycle() {
          echo marker > /usr/local/it-marker && echo installed; \
          test -d /var/lib && echo var",
     );
-    let preload = format!("{}/sandbox-rootshim.so", s.path("run"));
+    let preload = format!("{}/sandpad-rootshim.so", s.path("run"));
     assert_eq!(
         lines(&o),
         [
@@ -596,7 +596,7 @@ fn reset_is_refused_while_the_box_is_mounted() {
     let s = Scratch::new("busy");
     let b = s.box_dir();
     let mut running = s
-        .sandbox()
+        .sandpad()
         .args(["--root", "-b"])
         .arg(&b)
         .args(["sh", "-c", "echo ready; exec sleep 30"])
@@ -615,7 +615,7 @@ fn reset_is_refused_while_the_box_is_mounted() {
     assert!(stderr(&o).contains("is in use"), "{}", stderr(&o));
     assert!(b.join("usr").is_dir());
 
-    // SIGTERM to sandbox stops bwrap, and the layers are unmounted on the way out
+    // SIGTERM to sandpad stops bwrap, and the layers are unmounted on the way out
     // SAFETY: our own child's pid
     unsafe { libc::kill(running.id() as i32, libc::SIGTERM) };
     let status = wait_for(&mut running, Duration::from_secs(10));
@@ -695,7 +695,7 @@ fn reset_takes_down_what_a_dead_sandbox_left_mounted() {
 /// up), with its stdout consumed up to that line.
 fn hold(s: &Scratch, opts: &[&str], script: &str) -> Child {
     let mut c = s
-        .sandbox()
+        .sandpad()
         .args(opts)
         .arg("-b")
         .arg(s.box_dir())
@@ -720,7 +720,7 @@ fn a_run_like_a_running_sandbox_joins_it() {
     // hostname; as the real uid, with bwrap's environment edits, without
     // capabilities, in the -d directory
     let o = s
-        .sandbox()
+        .sandpad()
         .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nowhere")
         .env("SESSION_MANAGER", "local/host:/nowhere")
         .args(["-d", "/usr", "-b"])
@@ -741,7 +741,7 @@ fn a_run_like_a_running_sandbox_joins_it() {
         [
             "/usr",
             "shared",
-            "sandbox",
+            "sandpad",
             &uid(),
             "unset wayland-0",
             "own-bus",
@@ -778,7 +778,7 @@ fn a_run_like_a_running_sandbox_joins_it() {
     .unwrap();
     fs::set_permissions(&exe, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let run_exe = |hold: bool| {
-        let mut c = s.sandbox();
+        let mut c = s.sandpad();
         c.arg("-b").arg(s.box_dir()).arg(&exe);
         if hold {
             c.arg("hold");
@@ -907,8 +907,8 @@ fn root_permission_asks_the_host_and_runs_the_command_as_root() {
     fs::set_permissions(&dialog, fs::Permissions::from_mode(0o755)).unwrap();
     fs::write(s.path("answer"), "approve").unwrap();
     let o = s
-        .sandbox()
-        .env("SANDBOX_ASKROOT_DIALOG", &dialog)
+        .sandpad()
+        .env("SANDPAD_ASKROOT_DIALOG", &dialog)
         .args(["-p", "root", "-b"])
         .arg(s.box_dir())
         .args([
@@ -953,8 +953,8 @@ fn root_permission_asks_the_host_and_runs_the_command_as_root() {
 
     fs::write(s.path("answer"), "deny").unwrap();
     let o = s
-        .sandbox()
-        .env("SANDBOX_ASKROOT_DIALOG", &dialog)
+        .sandpad()
+        .env("SANDPAD_ASKROOT_DIALOG", &dialog)
         .args(["-p", "root", "-b"])
         .arg(s.box_dir())
         .args(["sh", "-c", "sudo id -u; echo $?"])
@@ -1024,7 +1024,7 @@ impl Pty {
             "-c",
             "\"$@\"; result=$?; printf '\\nPTY_RESULT=%s\\n' \"$result\"; read finish",
             "sh",
-            SANDBOX,
+            SANDPAD,
             "-i",
             "-b",
         ])
@@ -1040,7 +1040,7 @@ impl Pty {
         .stdout(slave.try_clone().unwrap())
         .stderr(slave);
         if s.dir.join("dialog").exists() {
-            cmd.env("SANDBOX_ASKROOT_DIALOG", s.dir.join("dialog"));
+            cmd.env("SANDPAD_ASKROOT_DIALOG", s.dir.join("dialog"));
         }
         // SAFETY: session/terminal syscalls only, in the new host shell.
         unsafe {
@@ -1266,8 +1266,8 @@ fn sudo_login_starts_an_interactive_root_shell() {
     // Supplying a command must execute it in the login shell rather than
     // opening an interactive shell or dropping arguments containing spaces.
     let output = s
-        .sandbox()
-        .env("SANDBOX_ASKROOT_DIALOG", s.dir.join("dialog"))
+        .sandpad()
+        .env("SANDPAD_ASKROOT_DIALOG", s.dir.join("dialog"))
         .args(["-p", "root", "-b"])
         .arg(s.box_dir())
         .args([

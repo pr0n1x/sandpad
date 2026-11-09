@@ -55,7 +55,7 @@ pub fn wrapper() -> Vec<String> {
         "sh",
         "-c",
         "n=0; while [ \"$(id -u)\" = 65534 ]; do \
-           [ \"$((n+=1))\" -lt 100 ] || { echo 'sandbox: no uid map after 5s' >&2; exit 1; }; \
+           [ \"$((n+=1))\" -lt 100 ] || { echo 'sandpad: no uid map after 5s' >&2; exit 1; }; \
            sleep 0.05; done; exec \"$0\" \"$@\"",
     ]
     .iter()

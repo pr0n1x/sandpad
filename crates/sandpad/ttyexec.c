@@ -1,4 +1,4 @@
-/* ttyexec: sandbox -i's launcher inside the sandbox.
+/* ttyexec: sandpad -i's launcher inside the sandbox.
  *
  * An interactive command shares the user's terminal, whose foreground
  * process group is the sandbox process's: a group outside the sandbox's
@@ -25,7 +25,7 @@
 int main(int argc, char **argv)
 {
 	if (argc < 2) {
-		fputs("usage: sandbox-tty-exec COMMAND [ARGS...]\n", stderr);
+		fputs("usage: sandpad-tty-exec COMMAND [ARGS...]\n", stderr);
 		return 2;
 	}
 	/* only a controlling terminal of this session; a pipe, or another
@@ -42,12 +42,12 @@ int main(int argc, char **argv)
 		int err = errno;
 		sigprocmask(SIG_SETMASK, &saved, NULL);
 		if (failed) {
-			fprintf(stderr, "sandbox-tty-exec: taking the terminal foreground group: %s\n",
+			fprintf(stderr, "sandpad-tty-exec: taking the terminal foreground group: %s\n",
 			        strerror(err));
 			return 1;
 		}
 	}
 	execvp(argv[1], argv + 1);
-	fprintf(stderr, "sandbox-tty-exec: %s: %s\n", argv[1], strerror(errno));
+	fprintf(stderr, "sandpad-tty-exec: %s: %s\n", argv[1], strerror(errno));
 	return 127;
 }

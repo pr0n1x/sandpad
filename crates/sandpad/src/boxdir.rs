@@ -25,7 +25,7 @@ static ROOTSHIM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rootshim.so")
 /// Where it is bound inside: under /usr, a path AppArmor lets every program
 /// load libraries from (some coreutils applets are confined separately).
 /// The shim's name under the sandbox's runtime dir (`rootshim_inside`).
-pub const ROOTSHIM_NAME: &str = "sandbox-rootshim.so";
+pub const ROOTSHIM_NAME: &str = "sandpad-rootshim.so";
 
 /// Where the shim is inside, given the runtime dir (the same path as on
 /// the host: bwrap creates it there).
@@ -46,24 +46,24 @@ impl BoxDir {
     }
 }
 
-/// -b: a bare NAME is a box under ~/sandboxes, anything with a slash is a
+/// -b: a bare NAME is a box under ~/sandpad, anything with a slash is a
 /// directory; -a: per-app box named after the binary's path with dashes for
 /// slashes (/usr/bin/foo -> usr-bin-foo); default: the shared box
-/// ~/sandboxes/default.
+/// ~/sandpad/default.
 pub fn resolve(opt: Option<&str>, app_box: bool, app: Option<&Path>, home: &Path) -> BoxDir {
-    let sandboxes = home.join("sandboxes");
+    let boxes = home.join("sandpad");
     let path = match opt {
         Some(s) if s.contains('/') => realpath_m(Path::new(s)),
-        Some(name) => sandboxes.join(name),
+        Some(name) => boxes.join(name),
         None if app_box => {
             let app = app.unwrap_or_else(|| die(2, "-a needs an app to name the box after"));
             let slug = app
                 .to_string_lossy()
                 .trim_start_matches('/')
                 .replace('/', "-");
-            sandboxes.join(slug)
+            boxes.join(slug)
         }
-        None => sandboxes.join("default"),
+        None => boxes.join("default"),
     };
     let rel_home = home.strip_prefix("/").unwrap_or(home);
     let box_home = path.join(rel_home);
@@ -559,7 +559,7 @@ mod tests {
 
     fn scratch(name: &str) -> PathBuf {
         let d = crate::util::home()
-            .join("tmp/sandbox-tests")
+            .join("tmp/sandpad-tests")
             .join(format!("{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
@@ -570,7 +570,7 @@ mod tests {
     fn box_naming() {
         let d = scratch("box-naming");
         let home = d.join("home/user");
-        let sb = home.join("sandboxes");
+        let sb = home.join("sandpad");
         assert_eq!(resolve(None, false, None, &home).path, sb.join("default"));
         assert_eq!(
             resolve(Some("mybox"), false, None, &home).path,
@@ -636,7 +636,7 @@ mod tests {
             args[3],
             std::os::fd::AsRawFd::as_raw_fd(&fd).to_string().as_str()
         );
-        assert_eq!(args[4], "/run/user/1000/sandbox-rootshim.so");
+        assert_eq!(args[4], "/run/user/1000/sandpad-rootshim.so");
         // what bwrap will read, from the start
         use std::io::Read;
         let mut got = Vec::new();
@@ -656,11 +656,11 @@ mod tests {
         fs::create_dir_all(b.path.join(".work")).unwrap();
         fs::create_dir_all(b.path.join("usr/lib")).unwrap();
         fs::write(b.path.join(".work/rootshim.so"), "old").unwrap();
-        fs::write(b.path.join("usr/lib/sandbox-rootshim.so"), "").unwrap();
+        fs::write(b.path.join("usr/lib/sandpad-rootshim.so"), "").unwrap();
         fs::write(b.path.join("usr/lib/other"), "keep").unwrap();
         forget_old_rootshim(&b);
         assert!(!b.path.join(".work/rootshim.so").exists());
-        assert!(!b.path.join("usr/lib/sandbox-rootshim.so").exists());
+        assert!(!b.path.join("usr/lib/sandpad-rootshim.so").exists());
         assert!(b.path.join("usr/lib/other").is_file());
         let _ = fs::remove_dir_all(&d);
     }

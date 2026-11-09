@@ -1,5 +1,5 @@
 //! The dialog: the prompt on stdin, `approve` or `deny` on stdout. Run by
-//! the `sandbox` process supervising a `-p root` sandbox, once per request.
+//! the `sandpad` process supervising a `-p root` sandbox, once per request.
 //! Closing the window denies.
 
 use std::io::Read;
@@ -8,12 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use iced::keyboard::{self, key::Named, Key};
 use iced::widget::{button, column, container, row, text};
 use iced::{window, Color, Element, Length, Size, Subscription, Task, Theme};
-use sandbox_askroot::Prompt;
+use sandpad_askroot::Prompt;
 
 fn main() {
     let mut text = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut text) {
-        eprintln!("sandbox-askroot-dialog: cannot read the prompt: {e}");
+        eprintln!("sandpad-askroot-dialog: cannot read the prompt: {e}");
         println!("deny");
         std::process::exit(1);
     }
@@ -65,7 +65,7 @@ fn ask(prompt: Prompt) -> bool {
         })
         .run();
     if let Err(e) = result {
-        eprintln!("sandbox-askroot-dialog: {e}");
+        eprintln!("sandpad-askroot-dialog: {e}");
         return false;
     }
     APPROVED.load(Ordering::SeqCst)

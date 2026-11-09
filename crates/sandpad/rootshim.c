@@ -1,4 +1,4 @@
-/* rootshim: LD_PRELOAD helper for sandbox.sh --root.
+/* rootshim: LD_PRELOAD helper for sandpad --root.
  *
  * Inside the sandbox "root" is just a uid: no capabilities, and the
  * fuse-overlayfs daemon serving the layered system is a plain user process

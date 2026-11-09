@@ -13,12 +13,12 @@ use std::process::{Command, Stdio};
 
 /// Exit with a message on stderr, like the script's `echo ... >&2; exit N`.
 pub fn die(code: i32, msg: impl AsRef<str>) -> ! {
-    eprintln!("sandbox: {}", msg.as_ref());
+    eprintln!("sandpad: {}", msg.as_ref());
     std::process::exit(code)
 }
 
 pub fn warn(msg: impl AsRef<str>) {
-    eprintln!("sandbox: {}", msg.as_ref());
+    eprintln!("sandpad: {}", msg.as_ref());
 }
 
 /// `realpath -e`: resolve everything; the path must exist.
@@ -221,7 +221,7 @@ pub fn memfd_bind_args(
     perms: &str,
     dest: &Path,
 ) -> (OwnedFd, Vec<OsString>) {
-    let name = std::ffi::CString::new(label).unwrap_or_else(|_| c"sandbox".to_owned());
+    let name = std::ffi::CString::new(label).unwrap_or_else(|_| c"sandpad".to_owned());
     // SAFETY: a fresh memfd, inheritable on purpose (no MFD_CLOEXEC)
     let fd = unsafe { libc::memfd_create(name.as_ptr(), 0) };
     if fd < 0 {
@@ -255,7 +255,7 @@ mod tests {
 
     fn scratch(name: &str) -> PathBuf {
         let d = home()
-            .join("tmp/sandbox-tests")
+            .join("tmp/sandpad-tests")
             .join(format!("{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();

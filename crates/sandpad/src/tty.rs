@@ -1,5 +1,5 @@
 //! `-i`'s terminal handoff. An interactive command shares the user's
-//! terminal, whose foreground process group is the `sandbox` process's — a
+//! terminal, whose foreground process group is the `sandpad` process's — a
 //! group outside the sandbox's pid namespace, which reads as 0 from inside.
 //! A shell saves that at startup and fails to restore it at exit ("Cannot
 //! set tty process group"), and its exit status is lost. So the command
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 static TTYEXEC: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ttyexec"));
 
 /// The launcher's name under the sandbox's runtime dir.
-pub const TTYEXEC_NAME: &str = "sandbox-tty-exec";
+pub const TTYEXEC_NAME: &str = "sandpad-tty-exec";
 
 /// The launcher, handed to bwrap from memory and bound inside under the
 /// runtime dir; its path inside, to go in front of the app.
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn ttyexec_is_an_executable_from_memory_under_the_runtime_dir() {
         let (fd, args, inside) = ttyexec_args(Path::new("/run/user/1000"));
-        assert_eq!(inside, PathBuf::from("/run/user/1000/sandbox-tty-exec"));
+        assert_eq!(inside, PathBuf::from("/run/user/1000/sandpad-tty-exec"));
         assert_eq!(args[0], "--perms");
         assert_eq!(args[1], "0755");
         assert_eq!(args[2], "--ro-bind-data");

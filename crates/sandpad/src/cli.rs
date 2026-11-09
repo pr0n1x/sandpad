@@ -40,27 +40,27 @@ impl CliError {
             CliError::Help => print!("{}", help()),
             CliError::Usage { message } => {
                 if !message.is_empty() {
-                    eprintln!("sandbox: {message}");
+                    eprintln!("sandpad: {message}");
                 }
                 eprintln!("{USAGE}");
             }
-            CliError::BindNotFound { dir } => eprintln!("sandbox: bind dir not found: {dir}"),
+            CliError::BindNotFound { dir } => eprintln!("sandpad: bind dir not found: {dir}"),
         }
     }
 }
 
-const USAGE: &str = "usage: sandbox [-i|--interactive] [-s|--separate] [-z|--zygote ID] [-w|--bind DIR]... [-W|--workdir DIR]... [-r|--ro-bind DIR]... [-d|--chdir DIR] [-b|--box NAME|DIR] [-a|--app-box] [-n|--net[IFACE]] [-6|--ipv6] [-x|--x11] [-p|--permissions LIST]... [--root] /usr/bin/someapp [args...]
-       sandbox [-b NAME|DIR] --reset-system";
+const USAGE: &str = "usage: sandpad [-i|--interactive] [-s|--separate] [-z|--zygote ID] [-w|--bind DIR]... [-W|--workdir DIR]... [-r|--ro-bind DIR]... [-d|--chdir DIR] [-b|--box NAME|DIR] [-a|--app-box] [-n|--net[IFACE]] [-6|--ipv6] [-x|--x11] [-p|--permissions LIST]... [--root] /usr/bin/someapp [args...]
+       sandpad [-b NAME|DIR] --reset-system";
 
 fn help() -> String {
     let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
     format!(
-        "usage: sandbox [options] /usr/bin/someapp [args...]
-       sandbox [-b NAME|DIR] --reset-system
+        "usage: sandpad [options] /usr/bin/someapp [args...]
+       sandpad [-b NAME|DIR] --reset-system
 
 Run an app inside strict bubblewrap isolation: own namespaces, no network,
 read-only system, a private home, Wayland/GPU/sound passed through.
-Everything the app keeps lives in its box, ~/sandboxes/<name>/, laid out
+Everything the app keeps lives in its box, ~/sandpad/<name>/, laid out
 like the root filesystem:
   home/{user:<18}    bound as $HOME
   usr/ etc/ opt/ var/     the app's changes to the system, once a --root
@@ -85,10 +85,10 @@ options:
                       (in the last one if repeated)
   -r, --ro-bind DIR   ro-bind DIR at its real path; repeatable
   -d, --chdir DIR     start the app in DIR (overrides -W's chdir)
-  -b, --box NAME|DIR  use box ~/sandboxes/NAME, or the directory DIR
-                      (default: the shared box ~/sandboxes/default)
+  -b, --box NAME|DIR  use box ~/sandpad/NAME, or the directory DIR
+                      (default: the shared box ~/sandpad/default)
   -a, --app-box       per-app box instead, named after the binary's path:
-                      /usr/bin/foo -> ~/sandboxes/usr-bin-foo
+                      /usr/bin/foo -> ~/sandpad/usr-bin-foo
   -n, --net[IFACE]    outbound networking via pasta (rootless NAT); snap
                       apps run as fake root inside. With an attached IFACE
                       (-nenp39s0 / --net=enp39s0) traffic is pinned to that
@@ -114,7 +114,7 @@ options:
                       /etc, /opt, /var writable, changes kept in the box,
                       never reaching the host) that shows every system file
                       as root's, so installers can change anything readable;
-                      e.g. 'sandbox --root -b mybox dpkg -i x.deb'
+                      e.g. 'sandpad --root -b mybox dpkg -i x.deb'
   --reset-system      reset the box's system to the host's, keeping its
                       home: removes the system layer (usr/ etc/ opt/ var/
                       and the overlay's scratch dirs). Refused while a
@@ -308,10 +308,10 @@ mod tests {
         parse(args.iter().map(|s| s.to_string()).collect()).expect_err("fails")
     }
 
-    /// a scratch dir under ~/tmp/sandbox-tests, on a real filesystem
+    /// a scratch dir under ~/tmp/sandpad-tests, on a real filesystem
     fn scratch(name: &str) -> PathBuf {
         let d = crate::util::home()
-            .join("tmp/sandbox-tests")
+            .join("tmp/sandpad-tests")
             .join(format!("{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
