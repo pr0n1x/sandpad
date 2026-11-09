@@ -665,6 +665,32 @@ fn the_last_sandbox_on_a_box_unmounts_its_layers() {
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
 }
 
+#[test]
+fn reset_takes_down_what_a_dead_sandbox_left_mounted() {
+    require!(bwrap_works(), "bwrap can't create a sandbox here");
+    require!(have("fuse-overlayfs"), "fuse-overlayfs is not installed");
+    let s = Scratch::new("orphans");
+    let b = s.box_dir();
+    let mut a = hold(&s, &["--root"], "echo ready; exec sleep 30");
+    assert!(mounts_under(&b.join(".mnt")) > 0);
+    // SIGKILL: no cleanup; bwrap dies with its parent, the mounts stay
+    // SAFETY: our own child's pid
+    unsafe { libc::kill(a.id() as i32, libc::SIGKILL) };
+    wait_for(&mut a, Duration::from_secs(10));
+    assert!(mounts_under(&b.join(".mnt")) > 0);
+    // nobody holds the box: reset unmounts the orphans and goes ahead
+    // (bwrap may still be on its way out for a moment)
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut o = s.reset();
+    while o.status.code() != Some(0) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        o = s.reset();
+    }
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(mounts_under(&b.join(".mnt")), 0);
+    assert!(!b.join("usr").exists());
+}
+
 /// A sandbox held open on `script` (which must print "ready" once it is
 /// up), with its stdout consumed up to that line.
 fn hold(s: &Scratch, opts: &[&str], script: &str) -> Child {

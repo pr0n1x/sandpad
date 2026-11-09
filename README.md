@@ -329,7 +329,8 @@ sandbox [-b NAME|DIR] --reset-system
   home: removes the system layer, i.e. `usr/`, `etc/`, `opt/`, `var/` and
   the overlay's `.work/` and `.mnt/`. The box then sees the host's system
   again, until the next `--root` run. Refused while a sandbox runs on the
-  box. Takes no app: `sandbox -b mybox --reset-system`.
+  box; layers a sandbox left mounted by dying without cleaning up are taken
+  down on the way. Takes no app: `sandbox -b mybox --reset-system`.
 
 ## Joining a running sandbox
 

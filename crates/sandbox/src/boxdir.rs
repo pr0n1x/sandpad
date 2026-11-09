@@ -78,10 +78,12 @@ pub fn resolve(opt: Option<&str>, app_box: bool, app: Option<&Path>, home: &Path
 /// --reset-system: back to the host's system, home untouched. Not while a
 /// sandbox runs on the box: its daemons would keep serving from
 /// directories pulled away under them. The lock says who is on the box;
-/// the mount check catches a sandbox that predates the lock.
+/// with nobody there, what is still mounted was left by a sandbox that
+/// died without taking it down, and goes now — unless something holds it
+/// (a sandbox from before the lock), which is in use after all.
 pub fn reset_system(b: &BoxDir) {
     let lock = LayerLock::acquire(b);
-    if !lock.alone() || has_mounts_under(&b.path.join(".mnt")) {
+    if !lock.alone() || !unmount_under(&b.path.join(".mnt")).is_empty() {
         die(
             1,
             format!(
@@ -226,22 +228,25 @@ impl LayerLock {
 impl Drop for LayerLock {
     fn drop(&mut self) {
         // the last one out takes the layers down under the setup lock;
-        // closing the file then releases both bytes
+        // closing the file then releases both bytes. The lock says nobody
+        // uses the layers, so they go outright; one something out of the
+        // sandbox's reach still holds goes lazily, rather than stay
         if self.set(SETUP, libc::F_WRLCK, true).is_ok() && self.alone() {
-            unmount_all(&self.mnt);
+            for m in unmount_under(&self.mnt) {
+                fusermount(&["-u", "-z"], &m);
+            }
         }
     }
 }
 
-/// Unmount everything under `.mnt`. Outright: the lock says nobody uses
-/// the layers; lazily only if something out of the sandbox's reach still
-/// holds one, rather than leave it mounted.
-fn unmount_all(mnt: &Path) {
-    for m in mounts_under(mnt).iter().rev() {
-        if !fusermount(&["-u"], m) {
-            fusermount(&["-u", "-z"], m);
-        }
-    }
+/// Unmount everything under `.mnt`, outright; what is still held stays
+/// mounted and is returned.
+fn unmount_under(mnt: &Path) -> Vec<PathBuf> {
+    mounts_under(mnt)
+        .into_iter()
+        .rev()
+        .filter(|m| !fusermount(&["-u"], m))
+        .collect()
 }
 
 fn fusermount(opts: &[&str], mnt: &Path) -> bool {
