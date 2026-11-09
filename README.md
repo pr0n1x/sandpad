@@ -44,7 +44,8 @@ on `PATH`. Nothing else needs them.
   - `usr/`, `etc/`, `opt/`, `var/` hold the app's changes to the system,
     once a `--root` run created them (see below). (`.work/` is the overlay's scratch
     space, `.mnt/` where the layered views are mounted while a sandbox runs:
-    `.mnt/user/` the plain view, `.mnt/root/` the `--root` one.)
+    `.mnt/user/` the plain view, `.mnt/root/` the `--root` one; `.mnt.lock`
+    is how the sandboxes on a box count each other.)
 - **Read-only system**: `/usr`, `/etc`, `/opt`, `/sys` are bound read-only;
   `/tmp` is a fresh tmpfs. A box that has a system layer (created by a
   `--root` run, see below) gets fuse-overlayfs layers over the first three
@@ -258,8 +259,13 @@ sandbox [-b NAME|DIR] --reset-system
   `<box>/.mnt/` — and bound into the sandbox, so nothing inside needs a
   capability and Ubuntu's stock bwrap profile stays untouched. A sandbox
   started while another one already has the box's layers mounted in the
-  same mode (plain or `--root`) reuses them; the mounts go away (lazily)
-  when the sandbox that made them exits. A `--root` sandbox next to a
+  same mode (plain or `--root`) reuses them; the last sandbox to leave the
+  box unmounts them, whoever mounted them (every sandbox on a layered box
+  holds a lock on `<box>/.mnt.lock` while it runs, and the one that finds
+  itself alone on the way out takes the layers down; mounting and taking
+  down are serialized through the same lock, so a sandbox starting as
+  another one exits sees the box either fully mounted or fully unmounted,
+  never half-way). A `--root` sandbox next to a
   running plain one gets its own mounts over the same box: fine for an
   install, but the running app sees the result only after a restart.
   Without `--root` the app sees the system as on the host: root's files —
@@ -322,8 +328,8 @@ sandbox [-b NAME|DIR] --reset-system
 - `--reset-system` — reset the box's system to the host's, keeping its
   home: removes the system layer, i.e. `usr/`, `etc/`, `opt/`, `var/` and
   the overlay's `.work/` and `.mnt/`. The box then sees the host's system
-  again, until the next `--root` run. Refused while a sandbox has the box's
-  layers mounted. Takes no app: `sandbox -b mybox --reset-system`.
+  again, until the next `--root` run. Refused while a sandbox runs on the
+  box. Takes no app: `sandbox -b mybox --reset-system`.
 
 ## Joining a running sandbox
 

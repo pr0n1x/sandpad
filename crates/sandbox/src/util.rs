@@ -98,7 +98,15 @@ pub fn is_mountpoint(path: &Path) -> bool {
 
 /// Is anything mounted under `dir`?
 pub fn has_mounts_under(dir: &Path) -> bool {
-    mounts().iter().any(|m| m.starts_with(dir) && m != dir)
+    !mounts_under(dir).is_empty()
+}
+
+/// The mount points under `dir`, in mount order.
+pub fn mounts_under(dir: &Path) -> Vec<PathBuf> {
+    mounts()
+        .into_iter()
+        .filter(|m| m.starts_with(dir) && m != dir)
+        .collect()
 }
 
 fn mounts() -> Vec<PathBuf> {

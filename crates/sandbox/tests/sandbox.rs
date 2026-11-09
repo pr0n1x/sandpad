@@ -626,6 +626,45 @@ fn reset_is_refused_while_the_box_is_mounted() {
     assert!(!b.join("usr").exists());
 }
 
+#[test]
+fn the_last_sandbox_on_a_box_unmounts_its_layers() {
+    require!(bwrap_works(), "bwrap can't create a sandbox here");
+    require!(have("fuse-overlayfs"), "fuse-overlayfs is not installed");
+    let s = Scratch::new("last-out");
+    let b = s.box_dir();
+    // two names: the second run doesn't join the first
+    let mut a = hold(&s, &["--root", "-z", "a"], "echo ready; exec sleep 30");
+    let mounted = mounts_under(&b.join(".mnt"));
+    assert!(mounted > 0);
+    let mut c = hold(&s, &["--root", "-z", "c"], "echo ready; exec sleep 30");
+    assert_eq!(
+        mounts_under(&b.join(".mnt")),
+        mounted,
+        "reused, not stacked"
+    );
+
+    // the one that mounted leaves first: the layers stay, for real — a
+    // third run finds and reuses them, and the box can't be reset
+    // SAFETY: our own child's pid
+    unsafe { libc::kill(a.id() as i32, libc::SIGTERM) };
+    wait_for(&mut a, Duration::from_secs(10));
+    assert_eq!(mounts_under(&b.join(".mnt")), mounted);
+    let o = s.sh(&["--root", "-s"], "test -d /var/lib/dpkg && echo ok");
+    assert_eq!(lines(&o), ["ok"]);
+    assert_eq!(mounts_under(&b.join(".mnt")), mounted);
+    let o = s.reset();
+    assert_eq!(o.status.code(), Some(1));
+    assert!(stderr(&o).contains("is in use"), "{}", stderr(&o));
+
+    // the last one out takes them down
+    // SAFETY: our own child's pid
+    unsafe { libc::kill(c.id() as i32, libc::SIGTERM) };
+    wait_for(&mut c, Duration::from_secs(10));
+    assert_eq!(mounts_under(&b.join(".mnt")), 0);
+    let o = s.reset();
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+}
+
 /// A sandbox held open on `script` (which must print "ready" once it is
 /// up), with its stdout consumed up to that line.
 fn hold(s: &Scratch, opts: &[&str], script: &str) -> Child {

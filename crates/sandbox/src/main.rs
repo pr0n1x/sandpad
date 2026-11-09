@@ -315,7 +315,7 @@ fn main() {
         boxdir::plain()
     };
     let mut cleanup = Cleanup {
-        mounts: layer.mounts.clone(),
+        layer: layer.lock,
         ro_file_mountpoint: Vec::new(),
         files: Vec::new(),
     };
@@ -713,24 +713,25 @@ fn bind_destinations(args: &[OsString]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// What this run leaves behind, undone whichever way main() ends: the
-/// layers it mounted, the mountpoint of the app's read-only file bind when
+/// What this run leaves behind, undone whichever way main() ends: its
+/// share of the box's layers (the last one out unmounts them), the
+/// mountpoint of the app's read-only file bind when
 /// it lies in the box home (an empty file bwrap creates there, and the
 /// directories down to it that didn't exist), deepest first, and files of
 /// its own (the -p root socket).
 struct Cleanup {
-    mounts: Vec<PathBuf>,
+    layer: Option<boxdir::LayerLock>,
     ro_file_mountpoint: Vec<PathBuf>,
     files: Vec<PathBuf>,
 }
 impl Cleanup {
     fn is_empty(&self) -> bool {
-        self.mounts.is_empty() && self.ro_file_mountpoint.is_empty() && self.files.is_empty()
+        self.layer.is_none() && self.ro_file_mountpoint.is_empty() && self.files.is_empty()
     }
 }
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        boxdir::unmount(&self.mounts);
+        self.layer.take();
         for f in &self.files {
             let _ = fs::remove_file(f);
         }

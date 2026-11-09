@@ -3,12 +3,14 @@
 //! writable upper layers of the system, once a `--root` run created them.
 
 use crate::util::{
-    die, exists, gid, has_mounts_under, has_xattr, is_mountpoint, realpath_m, run, set_xattr, uid,
+    die, exists, gid, has_mounts_under, has_xattr, is_mountpoint, mounts_under, realpath_m, run,
+    set_xattr, uid,
 };
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
-use std::os::fd::OwnedFd;
+use std::io;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -73,11 +75,13 @@ pub fn resolve(opt: Option<&str>, app_box: bool, app: Option<&Path>, home: &Path
     }
 }
 
-/// --reset-system: back to the host's system, home untouched. Not while the
-/// layers are mounted (a sandbox is running on the box): the daemons would
-/// keep serving from directories pulled away under them.
+/// --reset-system: back to the host's system, home untouched. Not while a
+/// sandbox runs on the box: its daemons would keep serving from
+/// directories pulled away under them. The lock says who is on the box;
+/// the mount check catches a sandbox that predates the lock.
 pub fn reset_system(b: &BoxDir) {
-    if has_mounts_under(&b.path.join(".mnt")) {
+    let lock = LayerLock::acquire(b);
+    if !lock.alone() || has_mounts_under(&b.path.join(".mnt")) {
         die(
             1,
             format!(
@@ -129,8 +133,125 @@ pub fn has_layer(b: &BoxDir) -> bool {
 pub struct Layer {
     /// bwrap arguments binding the layered views (or the plain ro-binds)
     pub args: Vec<OsString>,
-    /// the fuse-overlayfs mounts this process made; unmounted at exit
-    pub mounts: Vec<PathBuf>,
+    /// this sandbox's share of the box's layers: held while it runs, and
+    /// the last one dropped unmounts them
+    pub lock: Option<LayerLock>,
+}
+
+/// Who is on the box's layers: `<box>/.mnt.lock`, locked by byte range.
+///
+/// Byte 1 is read-locked by every sandbox using the layers, from before it
+/// looks at the mounts until it has exited: the one that can then
+/// write-lock it is the last one out, and unmounts everything under
+/// `.mnt` — not just what it mounted itself, so what a run left behind
+/// (a plain `-z` run joining a --root sandbox mounts the plain view first,
+/// then has no use for it) goes with the last user. Byte 0 is write-locked
+/// while the layers are checked and mounted, and while the last one out
+/// takes them down, so two starters can't both find a mountpoint missing
+/// and stack two daemons over one upper dir, and a starter can't slip in
+/// between "nobody else is here" and the unmounts.
+///
+/// Open file description locks: a forked helper's copy of the descriptor
+/// is the same lock, not a conflicting one, and the lock lives exactly as
+/// long as the description does.
+pub struct LayerLock {
+    file: fs::File,
+    mnt: PathBuf,
+}
+
+/// the lock's bytes
+const SETUP: i64 = 0;
+const USERS: i64 = 1;
+
+impl LayerLock {
+    /// Byte 0 exclusively, byte 1 shared: the box is ours to set up. Waits
+    /// for a sandbox setting up or taking down.
+    fn acquire(b: &BoxDir) -> LayerLock {
+        let path = b.path.join(".mnt.lock");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .unwrap_or_else(|e| die(1, format!("cannot open {}: {e}", path.display())));
+        let lock = LayerLock {
+            file,
+            mnt: b.path.join(".mnt"),
+        };
+        for (byte, kind) in [(SETUP, libc::F_WRLCK), (USERS, libc::F_RDLCK)] {
+            lock.set(byte, kind, true)
+                .unwrap_or_else(|e| die(1, format!("cannot lock {}: {e}", path.display())));
+        }
+        lock
+    }
+
+    /// Set up: let others start and stop. Still a user.
+    fn setup_done(&self) {
+        let _ = self.set(SETUP, libc::F_UNLCK, true);
+    }
+
+    /// Is this the only sandbox on the box? Yes leaves byte 1 write-locked:
+    /// nobody starts until this lock is dropped.
+    fn alone(&self) -> bool {
+        self.set(USERS, libc::F_WRLCK, false).is_ok()
+    }
+
+    fn set(&self, byte: i64, kind: i32, wait: bool) -> io::Result<()> {
+        let fl = libc::flock {
+            l_type: kind as i16,
+            l_whence: libc::SEEK_SET as i16,
+            l_start: byte,
+            l_len: 1,
+            l_pid: 0,
+        };
+        let cmd = if wait {
+            libc::F_OFD_SETLKW
+        } else {
+            libc::F_OFD_SETLK
+        };
+        loop {
+            // SAFETY: a valid descriptor and a filled-in flock
+            if unsafe { libc::fcntl(self.file.as_raw_fd(), cmd, &fl) } == 0 {
+                return Ok(());
+            }
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+}
+
+impl Drop for LayerLock {
+    fn drop(&mut self) {
+        // the last one out takes the layers down under the setup lock;
+        // closing the file then releases both bytes
+        if self.set(SETUP, libc::F_WRLCK, true).is_ok() && self.alone() {
+            unmount_all(&self.mnt);
+        }
+    }
+}
+
+/// Unmount everything under `.mnt`. Outright: the lock says nobody uses
+/// the layers; lazily only if something out of the sandbox's reach still
+/// holds one, rather than leave it mounted.
+fn unmount_all(mnt: &Path) {
+    for m in mounts_under(mnt).iter().rev() {
+        if !fusermount(&["-u"], m) {
+            fusermount(&["-u", "-z"], m);
+        }
+    }
+}
+
+fn fusermount(opts: &[&str], mnt: &Path) -> bool {
+    std::process::Command::new("fusermount3")
+        .args(opts)
+        .arg(mnt)
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// The plain system: host dirs bound read-only, no /var.
@@ -150,7 +271,7 @@ pub fn plain() -> Layer {
         .iter()
         .map(OsString::from)
         .collect(),
-        mounts: Vec::new(),
+        lock: None,
     }
 }
 
@@ -181,8 +302,9 @@ pub fn plain() -> Layer {
 ///
 /// A mount already present (another sandbox on this box, in the same mode:
 /// the squashed and the plain view live under .mnt/root and .mnt/user) is
-/// reused, not remounted; only mounts made here are unmounted at exit,
-/// lazily, so a sandbox still using one keeps it alive.
+/// reused, not remounted; the last sandbox to leave the box unmounts
+/// (LayerLock), and everything here runs under its setup lock, so the
+/// mounts seen are the mounts there are.
 pub fn mount_layer(b: &BoxDir, root: bool) -> Layer {
     if !exists("fuse-overlayfs") {
         die(
@@ -190,6 +312,7 @@ pub fn mount_layer(b: &BoxDir, root: bool) -> Layer {
             "this box has a system layer, which needs fuse-overlayfs (apt install fuse-overlayfs)",
         );
     }
+    let lock = LayerLock::acquire(b);
     // /var only exists in the sandbox with a layer: package managers need it.
     // dpkg's and apt's lock files are root-only on the host, so they can't be
     // copied up to be opened for writing; shadow them with empty box files
@@ -222,7 +345,7 @@ pub fn mount_layer(b: &BoxDir, root: bool) -> Layer {
     let mode = if root { "root" } else { "user" };
     let mut layer = Layer {
         args: Vec::new(),
-        mounts: Vec::new(),
+        lock: None,
     };
     for d in LAYERED {
         let dir = Path::new("/").join(d);
@@ -254,24 +377,14 @@ pub fn mount_layer(b: &BoxDir, root: bool) -> Layer {
                     format!("fuse-overlayfs failed to mount {}", dir.display()),
                 );
             }
-            layer.mounts.push(mnt.clone());
         }
         layer
             .args
             .extend(["--bind".into(), mnt.into_os_string(), dir.into_os_string()]);
     }
+    lock.setup_done();
+    layer.lock = Some(lock);
     layer
-}
-
-/// Lazily unmount the layers this process mounted.
-pub fn unmount(mounts: &[PathBuf]) {
-    for m in mounts {
-        let _ = std::process::Command::new("fusermount3")
-            .args(["-u", "-z"])
-            .arg(m)
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
 }
 
 /// --root: the shim, handed to bwrap from memory and bound inside under

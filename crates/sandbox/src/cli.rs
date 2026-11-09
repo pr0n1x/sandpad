@@ -118,7 +118,7 @@ options:
   --reset-system      reset the box's system to the host's, keeping its
                       home: removes the system layer (usr/ etc/ opt/ var/
                       and the overlay's scratch dirs). Refused while a
-                      sandbox has the box mounted
+                      sandbox runs on the box
   -h, --help          show this help
 "
     )
