@@ -16,6 +16,12 @@ cargo build --release          # needs cargo and a C compiler
 ln -s "$PWD/target/release/sandpad" ~/bin/sandpad
 ```
 
+Or from [crates.io](https://crates.io/crates/sandpad), into `~/.cargo/bin`:
+
+```sh
+cargo install sandpad sandpad-askroot   # the second only for -p root
+```
+
 The workspace builds three binaries, all into `target/release/`: `sandpad`
 (`crates/sandpad/`), and for `-p root` (`crates/askroot/`) the
 `sandpad-askroot-shim` that stands in for `sudo`/`pkexec`/`su` inside a

@@ -4,6 +4,10 @@ description = "The pieces behind `sandpad -p root`: the sudo/pkexec shim inside 
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["sandbox", "bubblewrap", "sudo", "pkexec", "linux"]
+categories = ["command-line-utilities", "os::linux-apis"]
 
 [lib]
 name = "sandpad_askroot"

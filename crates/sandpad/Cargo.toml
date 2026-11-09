@@ -4,6 +4,11 @@ description = "Run an app inside strict bubblewrap isolation, with a per-box hom
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords = ["sandbox", "bubblewrap", "bwrap", "isolation", "linux"]
+categories = ["command-line-utilities", "os::linux-apis"]
 
 [[bin]]
 name = "sandpad"
@@ -11,4 +16,4 @@ path = "src/main.rs"
 
 [dependencies]
 libc.workspace = true
-sandpad-askroot = { path = "../askroot" }
+sandpad-askroot = { path = "../askroot", version = "0.1.0" }
